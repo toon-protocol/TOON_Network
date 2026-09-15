@@ -1,5 +1,7 @@
 # Compute marketplace on TOON: Paygress as the base
 
+> **Superseded for design decisions** by [`CONTEXT.md`](../../CONTEXT.md), [`docs/adr/`](../adr/) and the [v1 spec draft](../spec/toon-network-v1.md). This document remains the research record; where they differ (Cashu, Blossom, Lading, mesh-compute, etc.), the ADRs win.
+
 Research date: **2026-09-15**. Design-oriented research. The premise: **no chain of our own and no network token**.
 - **Settlement:** TOON payment channels.
 - **Marketplace control plane:** a TOON relay plus NIPs.
