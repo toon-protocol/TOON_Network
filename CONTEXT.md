@@ -111,3 +111,9 @@ _Avoid_: Manifest, bill of lading, part list
 **Template**:
 A signed, published description of a spawn: an image by content address, its ports, its fixed settings and the settings a tenant may set. It grants no capability.
 _Avoid_: Preset, app
+
+### Tenant records
+
+**Deployment**:
+A tenant's signed statement that one environment of one repository is currently served by a lease. Only a tenant signs one, and a provider neither publishes nor reads it.
+_Avoid_: Release, rollout, environment record
