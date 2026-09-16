@@ -246,7 +246,7 @@ Every response is JSON. Errors use this shape, and on a paid route they are stil
 { "error": "<code>", "message": "<human readable>" }
 ```
 
-Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workload_id_taken`, `refused_image`, `no_capacity`, `no_matching_arch`, `invalid_request`, `expired`, `not_standby`, `bad_signature`, `stale_request`.
+Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workload_id_taken`, `refused_image`, `no_capacity`, `no_matching_arch`, `invalid_request`, `expired`, `not_standby`, `not_running`, `bad_signature`, `stale_request`.
 
 ---
 
@@ -333,9 +333,11 @@ The response is:
 
 **Request body:** `{ "workload_id": "…" }`, with no signature. Any payer may extend any lease (ADR 0005).
 
-- **On `.extend`:** the lease MUST be a running standalone or primary lease, or a standby after Takeover, and its listing version MUST equal the route's. The provider then sets `expires_at += lease_interval_s`.
-- **On `.standby.extend`:** the lease MUST be a standby before Takeover. The provider sets `expires_at += lease_interval_s`.
-- **Otherwise:** the provider refuses with `unknown_workload`, `wrong_listing_version`, `not_standby` or `expired`.
+A lease is always billed at the price for what it is doing, so each route wants the lease in the opposite state from the other:
+
+- **On `.extend`:** the lease MUST be a running standalone or primary lease, or a standby after Takeover, and its listing version MUST equal the route's. The provider then sets `expires_at += lease_interval_s`. A lease that is instead a Warm Standby reservation is refused `not_running`: it is billed at `standby_price` on `.standby.extend`, not at `price` here.
+- **On `.standby.extend`:** the lease MUST be a Reserved standby before Takeover, and its listing version MUST equal the route's. The provider then sets `expires_at += lease_interval_s`; the backend is never touched, since nothing runs for a reservation either before or after paying it. A running lease of any role — standalone, primary, or a standby after Takeover — is refused `not_standby`: it is billed at `price` on `.extend` instead.
+- **Otherwise, on either route:** an unknown `workload_id` is `unknown_workload`; a lease whose listing version does not match the route's is `wrong_listing_version`; a lease that has ended is `expired`, whatever ended it.
 
 It responds with `{ "workload_id", "expires_at" }`.
 
