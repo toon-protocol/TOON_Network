@@ -443,7 +443,7 @@ Signed by the publisher, with `d = <template name>`.
 - **Content:** `{ "version": n, "image": { "digest", "registry_entry"? }, "ports": [ { "container_port", "protocol" } ], "data_path"?, "env_fixed": {…}, "env_tenant": ["NAME", …], "min_resources"?: { "cpu_millicores", "memory_mb", "storage_gb", "gpu"? } }`
 - **Shapes it borrows:** `image` is §6.2's registry-entry or digest-alone form (never the upstream one — a Template names an image by content address); `ports` is a spawn's `ports` (§6.2); `min_resources` is a Listing's `resources` (§4.2), read as a floor for choosing a Listing rather than as a rule on any provider.
 - **No capabilities:** a Template grants nothing (ADR 0004).
-- **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Network and belong to rig, outside the `toon.network` label (ADR 0014, proposed).
+- **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Network and belong to rig, outside the `toon.network` label (ADR 0014).
 - **Who expands it:** in v1 the **tenant** expands a Template into a spawn. The provider never reads Templates, and `template` in a spawn is informational (§11, item 5).
 
 ### 8.4 Resolving and fetching an image (provider)

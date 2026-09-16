@@ -1,6 +1,6 @@
 # Reusable CI actions are not TOON Network's concern
 
-**Status:** Proposed, 2026-09-16. Answers [issue #17](https://github.com/toon-protocol/TOON_Network/issues/17); the maintainer has not confirmed it.
+**Status:** Accepted, 2026-09-16. Answers [issue #17](https://github.com/toon-protocol/TOON_Network/issues/17) with option 3; `rig` builds against it.
 
 A reusable CI action — the TOON-native equivalent of `uses: actions/checkout@v4`, a published name that resolves to a NIP-34 repo coordinate plus a commit — is not a TOON Network concept. TOON Network's marketplace stays compute-only: the Provider Directory, plus Templates. `rig` owns the action record, allocates its kind outside the `toon.network` label, and TOON Network's spec says so in one line at §8.3.
 
@@ -21,5 +21,5 @@ Finally, the spec's own scope line ("everything a provider must publish, accept 
 ## Consequences
 
 - `CONTEXT.md` is unchanged: **Template** keeps its definition, and no **Action** term enters the glossary.
-- `rig` allocates its own kind outside the TOON Network block. The kind allocation in #13 MUST document the reserved block (not just the individual numbers) so `rig` can allocate clear of it and of any future TOON Network kind.
+- `rig` allocates its own kind outside the TOON Network blocks. §3.1 documents the reserved blocks themselves, not only the allocated numbers (ADR 0012), so `rig` can allocate clear of them and of any future TOON Network kind.
 - If `rig` later needs an action to reference a listing, a capability or a lease, that is the trigger to reopen this and take option 2.
