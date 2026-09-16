@@ -72,6 +72,10 @@ _Avoid_: Revocation, termination notice
 A provider holding capacity to take over a lease's workload if the provider running it goes silent.
 _Avoid_: Replica, backup, failover node
 
+**Reservation**:
+The capacity a warm standby holds and is paid for, on which nothing runs until takeover.
+_Avoid_: Booking, hold, idle lease
+
 **Standby Set**:
 A primary lease and its warm standby leases, which serve one workload across several providers under one tenant-chosen workload id.
 _Avoid_: Replica set, cluster, group
