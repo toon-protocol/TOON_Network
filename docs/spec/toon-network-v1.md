@@ -346,7 +346,7 @@ It applies §6.2 steps 2, 5 and 6 without starting anything. A positive answer i
 
 **Request body:** `{ "request": <kind 4432 event, op=status> }`. Content: `{ "workload_id": "…" }`.
 
-The signer MUST be the lease's tenant (`not_tenant`). The response has `workload_id`, `role`, `state` (§6.7), `expires_at`, and `access` when present.
+The signer MUST be the lease's tenant (`not_tenant`). The response has `workload_id`, `role`, `state` (§6.7), `expires_at`, `access` when present, and `template` when the spawn named one (§6.2) — echoed as given, never resolved.
 
 ### 6.6 Termination (free)
 
