@@ -73,9 +73,9 @@ A fourth shape — `reference` together with `registry_entry`, a `digest` that i
 
 | File | Kind | Shows |
 |---|---|---|
-| `registry.image_entry.json` | `K_IMAGE` | `d = "web:1.0"`, `x` = the image digest's hex, and `blobs` with BOTH source types: one `oci` (still upstream) and one `toon-store` (naming the Blob Record's own upload) |
-| `registry.blob_record.json` | `K_BLOB` | `d` and `x` both name the blob; three ordered `parts`, two of `part_size` and a short last one, summing to `size` |
-| `registry.template.json` | `K_TEMPLATE` | `d` = the template name; `image` by content address plus its registry entry, `ports`, `data_path`, `env_fixed`, `env_tenant`, `min_resources`. No capability field |
+| `registry.image_entry.json` | `30434` (`K_IMAGE`) | `d = "web:1.0"`, `x` = the image digest's hex, and `blobs` with BOTH source types: one `oci` (still upstream) and one `toon-store` (naming the Blob Record's own upload) |
+| `registry.blob_record.json` | `30435` (`K_BLOB`) | `d` and `x` both name the blob; three ordered `parts`, two of `part_size` and a short last one, summing to `size` |
+| `registry.template.json` | `30436` (`K_TEMPLATE`) | `d` = the template name; `image` by content address plus its registry entry, `ports`, `data_path`, `env_fixed`, `env_tenant`, `min_resources`. No capability field |
 
 **Errors**, one per §5 code, in the spec's validation order (each carries `validation_step`). Statuses are this provider's HTTP mapping; the spec fixes only the JSON body.
 
@@ -98,11 +98,11 @@ A fourth shape — `reference` together with `registry_entry`, a `digest` that i
 
 | File | Kind | Shows |
 |---|---|---|
-| `directory.profile.json` | `K_PROFILE` | Every §4.1 field; `connector_seal_key` is what a tenant seals to (ADR 0011) |
-| `directory.listing.json` | `K_LISTING` | `basic`: `d`, `a` → Profile coordinate `10432:<pubkey>:`, `L`, `l isolation:`, `l arch:`, one `t` per capability, `g` |
-| `directory.listing.gpu.json` | `K_LISTING` | `gpu`: as above plus `resources.gpu` and `l gpu:<model>`, no `t` |
-| `directory.liveness.json` | `K_LIVENESS` | `available` per listing at full capacity; `expiration = now + 5 × liveness_cadence_s` |
-| `directory.eviction.json` | `K_EVICTION` | `x` tag = workload id; content `{ workload_id, reason, message }` |
+| `directory.profile.json` | `10432` (`K_PROFILE`) | Every §4.1 field; `connector_seal_key` is what a tenant seals to (ADR 0011) |
+| `directory.listing.json` | `30432` (`K_LISTING`) | `basic`: `d`, `a` → Profile coordinate `10432:<pubkey>:`, `L`, `l isolation:`, `l arch:`, one `t` per capability, `g` |
+| `directory.listing.gpu.json` | `30432` (`K_LISTING`) | `gpu`: as above plus `resources.gpu` and `l gpu:<model>`, no `t` |
+| `directory.liveness.json` | `10433` (`K_LIVENESS`) | `available` per listing at full capacity; `expiration = now + 5 × liveness_cadence_s` |
+| `directory.eviction.json` | `4433` (`K_EVICTION`) | `x` tag = workload id; content `{ workload_id, reason, message }` |
 
 **Routes**
 
@@ -112,7 +112,7 @@ A fourth shape — `reference` together with `registry_entry`, a `digest` that i
 
 ## Milestone 3 placeholders (not fixtures)
 
-Warm Standby is not implemented in Milestone 1, so there are no fixtures for `<addr>.<listing>.v<n>.standby`, `<addr>.<listing>.v<n>.standby.extend`, a spawn with `standby_set`, a `role: "standby"` response without `access`, or a `K_TAKEOVER` event. Today a spawn carrying `standby_set` is refused `invalid_request` ("Standby Sets are not sold in this milestone"). `error.not_standby.json` is the one exception: it is the error shape as the provider's own serialiser and status mapping render it, with `route`, `http_path` and `request_body` set to `null` because no Milestone 1 route can produce it. When Milestone 3 lands, `tests/wire_fixtures.rs` grows the cases and this section goes.
+Warm Standby is not implemented in Milestone 1, so there are no fixtures for `<addr>.<listing>.v<n>.standby`, `<addr>.<listing>.v<n>.standby.extend`, a spawn with `standby_set`, a `role: "standby"` response without `access`, or a kind `30433` (`K_TAKEOVER`) event. Today a spawn carrying `standby_set` is refused `invalid_request` ("Standby Sets are not sold in this milestone"). `error.not_standby.json` is the one exception: it is the error shape as the provider's own serialiser and status mapping render it, with `route`, `http_path` and `request_body` set to `null` because no Milestone 1 route can produce it. When Milestone 3 lands, `tests/wire_fixtures.rs` grows the cases and this section goes.
 
 ## Where the fixtures follow the provider rather than the spec draft
 
