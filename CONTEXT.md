@@ -44,6 +44,14 @@ _Avoid_: Top-up, renewal
 A privilege beyond an ordinary workload, such as running Docker inside it, that a listing grants.
 _Avoid_: Runtime flag, permission, privilege
 
+**Docker Capability**:
+The capability that gives a workload a Docker daemon of its own, at the conventional socket path, scoped to its lease.
+_Avoid_: Docker-in-Docker, dind, privileged mode
+
+**Nesting Capability**:
+The capability that lets a workload create containers or virtual machines of its own, by a mechanism its own image brings.
+_Avoid_: Virtualization, inner container, privileged mode
+
 **Expiry**:
 The end of a lease because no payment bought another lease interval.
 _Avoid_: Timeout, lapse
@@ -75,6 +83,10 @@ _Avoid_: Failover, promotion
 **Hidden Provider**:
 A provider whose network location is not revealed to tenants or observers by anything it publishes or serves.
 _Avoid_: Anonymous provider, onion provider
+
+**Workload Gateway**:
+A TOON app that fronts a workload at a stable hostname, resolving its workload id to whichever provider is currently running it.
+_Avoid_: Gateway (unqualified: the TOON store's gateway is a different thing), ingress, load balancer, reverse proxy
 
 ### Directory
 
@@ -111,3 +123,9 @@ _Avoid_: Manifest, bill of lading, part list
 **Template**:
 A signed, published description of a spawn: an image by content address, its ports, its fixed settings and the settings a tenant may set. It grants no capability.
 _Avoid_: Preset, app
+
+### Tenant records
+
+**Deployment**:
+A tenant's signed statement that one environment of one repository is currently served by a lease. Only a tenant signs one, and a provider neither publishes nor reads it.
+_Avoid_: Release, rollout, environment record

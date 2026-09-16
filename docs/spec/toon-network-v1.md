@@ -6,7 +6,7 @@
 
 **Words:** the terms in `CONTEXT.md` are normative. MUST, SHOULD and MAY are used as in RFC 2119.
 
-**Kind numbers:** kinds written `K_*` are **placeholders, not allocations** (§11, item 1). Their NIP-01 class (replaceable, addressable, regular) is normative.
+**Kind numbers:** every kind is allocated (§3.1). The numbers and their NIP-01 classes are normative, and an implementation MUST use them verbatim. The constant names (`K_PROFILE` and friends) are a convenience for implementations, not wire values.
 
 ---
 
@@ -44,11 +44,68 @@ tenant ──paid sealed packet (direct or n hops)──▶ provider connector �
 |---|---|---|
 | Provider Nostr key | provider | Provider Profile, Listings, Liveness, Takeover events, Eviction Notices |
 | Connector sealing key | provider's connector | nothing in this protocol; tenants seal to it |
-| Tenant Nostr key | tenant | Lease Requests (§6.1) |
+| Tenant Nostr key | tenant | Lease Requests (§6.1), Deployments (§3.1.2) |
 | Publisher Nostr key | image or template publisher | Image Registry entries, Blob Records, Templates |
 
 - **Pinned sealing key:** a Provider Profile MUST publish its connector's sealing public key. A tenant seals to that key and refuses if the URL's self-description reports another key (ADR 0011).
 - **Payer vs tenant:** the provider never links a payer to a tenant. Tenant identity comes only from a Lease Request signature (ADR 0005).
+
+### 3.1 Event kinds
+
+Every TOON Network kind is allocated from one contiguous block per NIP-01 class, so that a relay filter on a block is cheap and future kinds land next to the existing ones (ADR 0012). The blocks are:
+
+| Class | Block | Allocated | Free for later kinds |
+|---|---|---|---|
+| Regular (`1000`–`9999`) | `4432`–`4441` | `4432`–`4433` | `4434`–`4441` |
+| Replaceable (`10000`–`19999`) | `10432`–`10441` | `10432`–`10433` | `10434`–`10441` |
+| Addressable (`30000`–`39999`) | `30432`–`30441` | `30432`–`30437` | `30438`–`30441` |
+
+A new TOON Network kind MUST be taken from the free range of the block for its class, lowest number first. When a block runs out, the next block is chosen by the same collision check as §3.1.1 and recorded here.
+
+| Kind | Constant | Event | Class | Signer | Section |
+|---|---|---|---|---|---|
+| `4432` | `K_LEASE_REQUEST` | Lease Request | regular, **never published** | Tenant | §6.1 |
+| `4433` | `K_EVICTION` | Eviction Notice | regular | Provider | §6.7 |
+| `10432` | `K_PROFILE` | Provider Profile | replaceable | Provider | §4.1 |
+| `10433` | `K_LIVENESS` | Liveness | replaceable | Provider | §4.3 |
+| `30432` | `K_LISTING` | Listing | addressable, `d` = listing name | Provider | §4.2 |
+| `30433` | `K_TAKEOVER` | Takeover | addressable, `d` = workload id | Provider (the warm standby) | §7.1 |
+| `30434` | `K_IMAGE` | Image Registry entry | addressable, `d` = `<name>:<tag>` | Publisher | §8.1 |
+| `30435` | `K_BLOB` | Blob Record | addressable, `d` = `sha256:<hex>` | Uploader | §8.2 |
+| `30436` | `K_TEMPLATE` | Template | addressable, `d` = template name | Publisher | §8.3 |
+| `30437` | `K_DEPLOYMENT` | Deployment | addressable, `d` = environment | Tenant | §3.1.2 |
+
+Every event in the table except kind `4432` carries `["L","toon.network"]`, so the whole namespace is one label. A kind `4432` event is carried inside a request body and MUST NOT reach a relay (§6.1).
+
+#### 3.1.1 What these numbers were checked against
+
+Checked on **2026-09-16**, and no allocated number appears in any of them:
+
+- the [NIPs kind table](https://github.com/nostr-protocol/nips#event-kinds), read from `README.md` at `master`, including NIP-69's `38383` (which is why no Paygress kind is reused) and NIP-29's `9000`–`9030` and `39000`–`39009` ranges;
+- the [machine-readable registry of kinds](https://github.com/nostr-protocol/registry-of-kinds) (`schema.yaml` at `master`), which is broader than the README table. The nearest used kinds to the blocks are `4312`/`4454` (regular), `10377`/`11111` (replaceable) and `30403`/`30443` (addressable);
+- Nostr CI / NIP-C1's `9840`–`9844`, `19843`, `19844`, `29846`, `39842` and `39844`, which `rig` publishes on the same relays. **Unverified upstream:** there is no `C1.md` in the NIPs repository as of this date, so these numbers were taken from issue #13 rather than from a merged NIP;
+- TOON's `5094`–`5098` and Lading's `5320` and `30320`;
+- Paygress's `38383`–`38386` and `20384`, none of which is reused.
+
+#### 3.1.2 Deployment: kind `30437` (addressable), reserved
+
+A **Deployment** is a tenant's signed statement that one environment of one repository is currently served by a lease. It is reserved here so that tenant tooling shares the `toon.network` namespace, and it is **out of this spec's scope**: a provider never publishes a Deployment, never reads one, and nothing in this spec depends on one existing. Only the tenant signs it.
+
+Its tags are sketched, not normative:
+
+```
+["d", "<environment>"]                             e.g. production, preview-42
+["a", "<repo coordinate>"]                         the repository this deploys
+["p", "<provider pubkey>"]                         the provider running the lease
+["x", "<workload_id>"]                             the lease's workload id
+["x", "<image digest>"]                            the image the workload runs
+["a", "30432:<provider pubkey>:<listing name>"]    the Listing it was bought from
+["L", "toon.network"]
+```
+
+The repeated `a` and `x` tags are deliberate: a single `#a` filter finds a Deployment by either its repository or its Listing, and a single `#x` filter finds it by either its workload id or its image digest, which is the same use of `x` as the Eviction Notice (§6.7) and the Image Registry entry (§8.1).
+
+Tenant tooling fixes the exact shape; until it does, a provider MUST ignore kind `30437`.
 
 ---
 
@@ -56,7 +113,7 @@ tenant ──paid sealed packet (direct or n hops)──▶ provider connector �
 
 A provider publishes the events in this section to **every relay in its Relay Set**. Each event MUST carry the tag `["L","toon.network"]` so directory queries can select them.
 
-### 4.1 Provider Profile: `K_PROFILE` (replaceable)
+### 4.1 Provider Profile: kind `10432` (replaceable)
 
 One per provider. Content is JSON:
 
@@ -72,7 +129,7 @@ One per provider. Content is JSON:
 | `host` | string? | Public host tenants connect to. MUST be absent when `hidden` is true. |
 | `liveness_cadence_s` | int | How often Liveness is republished |
 
-### 4.2 Listing: `K_LISTING` (addressable)
+### 4.2 Listing: kind `30432` (addressable)
 
 One per sellable tier. `d` is the provider-chosen listing name, which is stable across versions.
 
@@ -92,7 +149,7 @@ Tags. Everything a relay should match goes in a single-letter tag; numbers stay 
 
 ```
 ["d", "<listing name>"]
-["a", "<K_PROFILE>:<provider pubkey>:"]            profile this listing belongs to (ADR 0002)
+["a", "10432:<provider pubkey>:"]                  profile this listing belongs to (ADR 0002)
 ["L", "toon.network"]
 ["l", "isolation:<value>", "toon.network"]
 ["l", "arch:<value>", "toon.network"]
@@ -105,7 +162,7 @@ A new version replaces the previous Listing event on the relay. The provider MUS
 
 A Listing whose Provider Profile cannot be found is not purchasable.
 
-### 4.3 Liveness: `K_LIVENESS` (replaceable)
+### 4.3 Liveness: kind `10433` (replaceable)
 
 - **Cadence:** one per provider, republished every `liveness_cadence_s` seconds.
 - **Expiration:** it MUST carry `["expiration", now + 5 × liveness_cadence_s]` (ADR 0007).
@@ -117,7 +174,49 @@ Content is JSON:
 { "available": { "<listing name>": <int leases that could start now> } }
 ```
 
-A provider is **live on a relay** while that relay holds an unexpired `K_LIVENESS` from it.
+A provider is **live on a relay** while that relay holds an unexpired kind `10433` event from it.
+
+### 4.4 Label vocabulary
+
+The values a relay matches on come from a fixed vocabulary. A tenant picks a Listing by these tags alone, so a value MUST mean the same thing on every provider.
+
+| Tag | Values |
+|---|---|
+| `l` `isolation:<value>` | `shared-kernel`, `dedicated-host` (§4.1) |
+| `l` `arch:<value>` | `amd64`, `arm64` (§4.2) |
+| `l` `gpu:<model>` | open (§11, item 1) |
+| `t` `<capability>` | `docker`, `nesting` |
+
+- A Listing MUST carry one `["t", "<capability>"]` tag per entry in `capabilities`, and MUST NOT carry a `t` tag for a capability it does not grant.
+- A tenant MUST ignore a capability value this section does not define, and MUST NOT read an unknown value as implying a known one. A provider experimenting with a capability before it is specified here SHOULD prefix it `x-`.
+- Capabilities are granted by the Listing alone (ADR 0004). A spawn never names one (§6.2).
+
+#### `docker`
+
+A lease from a Listing that grants `docker` runs a workload with a **Docker-compatible daemon of its own**.
+
+- **Reachability.** The daemon MUST be reachable from inside the workload at the conventional socket path `/var/run/docker.sock`. A tenant may assume a client with no `DOCKER_HOST` set finds it; a provider MAY set `DOCKER_HOST` as well.
+- **Scope.** The daemon MUST be scoped to that one lease. Its images, containers, volumes and networks belong to that lease, are invisible to every other lease, and are destroyed when the lease ends (§6.7).
+- **Never the host daemon.** The provider MUST NOT expose the daemon it runs its own workloads with, nor any daemon shared between leases, to a workload: not by bind-mounting its socket, not through a device, not over TCP, and not by proxying it. A provider app that itself drives a host daemon to create workloads is unaffected — that socket stays on the provider's side of the workload boundary.
+- **Reference shape.** A per-lease `dind` sidecar — a second container in the lease's isolation unit, sharing a private network with the workload, whose socket is the only one the workload sees — is the reference implementation. A backend MAY run an equivalent (a rootless daemon inside the workload, a daemon inside a nested VM) if it has the same scope and isolation, and the backend MUST document which it runs.
+- **Image pulls.** What the lease's daemon pulls is ordinary workload egress: it reaches exactly what the provider's egress policy allows that lease and nothing more. §8.4 does not apply to it — the Image Registry names the lease's own image, never the images a tenant pulls inside it — and the provider's own image cache MUST NOT be shared into the daemon. A provider whose egress policy blocks public registries SHOULD NOT grant `docker`, because a daemon that cannot pull cannot be used. For a Hidden Provider, nested pulls leave through `anon` like all other egress (§10).
+- **Privilege.** Granting `docker` is the provider accepting that it will run, per lease, a component that needs elevated privileges on its host — classically a privileged `dind` container. That is why it is a per-Listing decision and never a per-spawn one. It gives the **workload container itself** no extra Linux capabilities, no host mounts and no device mappings, and a spawn still may not ask for any (§6.2, ADR 0004). A provider on `shared-kernel` isolation that grants `docker` is accepting that privileged component on the kernel its other leases share.
+- **Resource accounting.** The Listing's `resources` bound the whole lease: the workload, its daemon, and every container that daemon runs. The provider MUST enforce `cpu_millicores` and `memory_mb` across that unit as a whole, not per container. Nested image layers and volumes count against `storage_gb`, and against `volume_gb` when they sit on the persistent volume. A lease that outgrows its budget is treated like any other overrun: the provider MAY throttle it, MAY let the kernel kill it, and MAY evict it (§6.7).
+- **Arch.** Nested containers run on the same machine, so the Listing's `arch` is their architecture too. `docker` promises no emulation: a pull of another architecture inside the workload MAY fail, and a provider that does offer emulation offers it outside this spec.
+- **Not included.** `docker` grants no nested VMs, no host network, no host devices and no GPU — a GPU comes from `resources.gpu`.
+
+#### `nesting`
+
+A lease from a Listing that grants `nesting` may create **isolation units of its own** — containers, sandboxes or virtual machines — with whatever mechanism its image brings: user namespaces, a container runtime it ships, or a hypervisor.
+
+- **How it differs from `docker`.** `docker` is a service the provider supplies at a known path; `nesting` is a permission the provider extends to tenant code. Under `docker` the privileged component is one the provider built and controls; under `nesting` the workload itself holds the kernel privileges its mechanism needs.
+- **Neither implies the other.** A Listing granting `docker` does not grant `nesting`: the workload may drive the daemon it was given and nothing else. A Listing granting `nesting` puts nothing at `/var/run/docker.sock`. A tenant that needs both MUST pick a Listing whose `capabilities` contains both.
+- **Privilege.** A provider MUST NOT grant `nesting` unless it accepts tenant-supplied code holding those privileges; `isolation: dedicated-host` (§4.1) is the expected shape. Which devices a `nesting` lease is given — `/dev/kvm`, `/dev/fuse` and the like — is the provider's decision, and it SHOULD document that decision. A spawn still names no device (§6.2, ADR 0004).
+- **Resource accounting** and **arch** are as for `docker`: everything nested counts against the Listing's `resources`, and nested guests run on the Listing's `arch`.
+
+#### Asking for a capability in a spawn
+
+A spawn carries no capability field, and a provider MUST NOT accept one (§6.2). Where a provider can recognise that a spawn is asking for a capability the route's Listing does not grant — a field outside the §6.2 table, or a request convention its backend documents — it MUST refuse the spawn with `invalid_request` rather than start a workload that cannot do what was asked of it.
 
 ---
 
@@ -150,7 +249,7 @@ Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workloa
 
 ## 6. Leases
 
-### 6.1 Lease Request: `K_LEASE_REQUEST` (regular, never published)
+### 6.1 Lease Request: kind `4432` (regular, never published)
 
 This is a tenant-signed event carried in request bodies. The provider validates it and MUST NOT publish it.
 
@@ -160,21 +259,29 @@ This is a tenant-signed event carried in request bodies. The provider validates 
   - `["expiration", t]`: the provider MUST refuse if `now > t`, and SHOULD refuse if `t - created_at` exceeds 300 s (`stale_request`).
 - **Replay:** the provider MUST keep the ids of Lease Requests it has accepted until their expiration, and refuse repeats.
 
+#### 6.1.1 Signing and packet body encoding
+
+- **A NIP-01 event, nothing more.** A Lease Request is an ordinary Nostr event of kind `K_LEASE_REQUEST` signed by the tenant's Nostr key. Its `id` is the SHA-256 of the NIP-01 serialization `[0, <pubkey>, <created_at>, <kind>, <tags>, <content>]` (UTF-8, no whitespace, NIP-01 escaping), and `sig` is a BIP-340 Schnorr signature over that `id` by `pubkey`. Nothing TOON-specific is hashed or signed, so any NIP-01 library produces and verifies a Lease Request.
+- **Content.** `content` is the op's JSON object (§6.2, §6.5, §6.6) serialised to a string. A field the spec does not name, anywhere in it, MUST be refused as `invalid_request`, never dropped (ADR 0004).
+- **Packet body.** The request body of a signed route is the JSON object `{ "request": <event> }`: the signed event as a JSON object, unmodified, as the value of the single key `request`. It is not re-encoded, base64'd or wrapped further, and a body with any other key MUST be refused as `invalid_request`. This body is the HTTP body inside the connector's sealed envelope: the tenant seals the whole HTTP request to the provider's pinned `connector_seal_key` (§3, ADR 0011; connector ADR 0018), the connector unseals it and forwards plain HTTP, and the provider app reads the body as plaintext JSON and no payment header (§2).
+- **Verification order.** The provider verifies `id` and `sig` first (`bad_signature`), then the kind, the `p` tag and the `op` tag (`invalid_request`), then `expiration` and the window (`stale_request`), then replay (`stale_request`). This is the whole of §6.2 step 1, and every signed route runs it identically.
+- **Fixtures.** Signed Lease Requests per `op`, with their packet bodies, are in Appendix B.
+
 ### 6.2 Spawn
 
-**Request body** on `.spawn` or `.standby`: `{ "request": <K_LEASE_REQUEST, op=spawn> }`. The request's content is JSON:
+**Request body** on `.spawn` or `.standby`: `{ "request": <kind 4432 event, op=spawn> }`. The request's content is JSON:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `workload_id` | hex, 32 bytes | Chosen at random by the tenant; shared by a Standby Set |
-| `image` | object | `{ "digest": "sha256:…", "registry_entry"?: { "address": "<K_IMAGE>:<pubkey>:<d>", "relay": "<url>" } }`. The digest names an index or a manifest. |
+| `image` | object | `{ "digest": "sha256:…", "registry_entry"?: { "address": "30434:<pubkey>:<d>", "relay": "<url>" } }`. The digest names an index or a manifest. |
 | `env` | object | Environment variables |
 | `ports` | object[] | `{ "container_port", "protocol": "tcp" \| "udp" }` |
 | `volume_gb` | int? | Persistent volume, ≤ `resources.storage_gb` |
 | `ssh_public_key` | string | Tenant's SSH key. No password is ever issued. |
 | `entrypoint`, `args` | string[]? | Overrides of the image's own |
 | `standby_set` | string[]? | Provider pubkeys, primary first (§7) |
-| `template` | string? | Informational `<K_TEMPLATE>:<pubkey>:<d>` the values came from |
+| `template` | string? | Informational `30436:<pubkey>:<d>` the values came from |
 
 **The provider MUST NOT accept** runtime flags, host mounts, device mappings or capabilities in a spawn. Capabilities come only from the listing (ADR 0004).
 
@@ -225,13 +332,13 @@ It applies §6.2 steps 2, 5 and 6 without starting anything. A positive answer i
 
 ### 6.5 Status (free)
 
-**Request body:** `{ "request": <K_LEASE_REQUEST, op=status> }`. Content: `{ "workload_id": "…" }`.
+**Request body:** `{ "request": <kind 4432 event, op=status> }`. Content: `{ "workload_id": "…" }`.
 
 The signer MUST be the lease's tenant (`not_tenant`). The response has `workload_id`, `role`, `state` (§6.7), `expires_at`, and `access` when present.
 
 ### 6.6 Termination (free)
 
-**Request body:** `{ "request": <K_LEASE_REQUEST, op=terminate> }`. Content: `{ "workload_id": "…" }`.
+**Request body:** `{ "request": <kind 4432 event, op=terminate> }`. Content: `{ "workload_id": "…" }`.
 
 The signer MUST be the lease's tenant. The provider destroys the workload or releases the reservation immediately. There is no refund.
 
@@ -245,7 +352,7 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 
 - **Expiry:** the provider MUST sweep at least every 30 s and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
 - **Eviction:** a provider MAY evict a lease for abuse, policy or maintenance. It MUST publish an Eviction Notice.
-- **Eviction Notice** (`K_EVICTION`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tag `["x", "<workload_id>"]`.
+- **Eviction Notice** (kind `4433`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tag `["x", "<workload_id>"]`.
 - **Persistence:** the provider MUST persist running leases and reservations across its own restarts.
 
 ---
@@ -261,9 +368,9 @@ A standby watches the primary's Liveness on the **primary's** Relay Set, read fr
 
 1. **Trigger:** the primary's Liveness is expired or absent on a strict majority of that Relay Set, continuously for `liveness_cadence_s` seconds.
 2. **Announce:** the standby publishes a Takeover event to the primary's Relay Set.
-   - Kind `K_TAKEOVER` (addressable), `d = <workload_id>`.
+   - Kind `30433` (addressable), `d = <workload_id>`.
    - Content: `{ "workload_id": "…", "primary": "<pubkey>" }`.
-3. **Settle:** after 2 × `liveness_cadence_s`, the standby queries `K_TAKEOVER` events for `d = <workload_id>` from **pubkeys in `standby_set`**. The winner has the earliest `created_at`; a tie goes to the lower index in `standby_set`.
+3. **Settle:** after 2 × `liveness_cadence_s`, the standby queries kind `30433` events for `d = <workload_id>` from **pubkeys in `standby_set`**. The winner has the earliest `created_at`; a tie goes to the lower index in `standby_set`.
 4. **If it won:** the standby starts the workload and the lease becomes Running. From then on the lease needs a `.extend` (full price) before its current `expires_at`, or it expires. `.standby.extend` is refused.
 5. **If it lost:** the standby stays Reserved, and watches the winner as its new primary.
 
@@ -275,7 +382,7 @@ A standby watches the primary's Liveness on the **primary's** Relay Set, read fr
 
 ## 8. Image Registry and image bytes
 
-### 8.1 Image Registry entry: `K_IMAGE` (addressable)
+### 8.1 Image Registry entry: kind `30434` (addressable)
 
 Signed by the publisher, with `d = "<name>:<tag>"`. The canonical name is `<publisher npub>/<name>:<tag>`.
 
@@ -298,7 +405,7 @@ Content is JSON:
 - **Tag:** `["x", "<digest hex>"]`.
 - **Moving a tag:** re-publishing the same `d` points the tag at a new image.
 
-### 8.2 Blob Record: `K_BLOB` (addressable)
+### 8.2 Blob Record: kind `30435` (addressable)
 
 Signed by whoever uploaded the parts, with `d = "sha256:<hex>"`.
 
@@ -313,13 +420,14 @@ Content is JSON:
 - **Parts:** each is stored as one TOON store upload (`kind:5094`).
 - **Where it lives:** the Blob Record is published to relays, and the same signed event JSON is also uploaded once to the TOON store. That upload's transaction id is the `blob_record_txid` used in Image Registry entries (ADR 0006).
 
-### 8.3 Template: `K_TEMPLATE` (addressable)
+### 8.3 Template: kind `30436` (addressable)
 
 Signed by the publisher, with `d = <template name>`.
 
 - **Content:** `{ "version": n, "image": { "digest", "registry_entry"? }, "ports", "data_path"?, "env_fixed": {…}, "env_tenant": ["NAME", …], "min_resources"?: {…} }`
 - **No capabilities:** a Template grants nothing (ADR 0004).
-- **Who expands it:** in v1 the **tenant** expands a Template into a spawn. The provider never reads Templates, and `template` in a spawn is informational (§11, item 6).
+- **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Network and belong to rig, outside the `toon.network` label (ADR 0014, proposed).
+- **Who expands it:** in v1 the **tenant** expands a Template into a spawn. The provider never reads Templates, and `template` in a spawn is informational (§11, item 5).
 
 ### 8.4 Resolving and fetching an image (provider)
 
@@ -343,8 +451,9 @@ A blob that fails verification is discarded, and the next source is tried. A blo
 ## 9. Workload rules
 
 - **v1 workloads are OCI containers** (ADR 0001 scope; Paygress Docker backend).
-- **Access:** SSH uses only the tenant's `ssh_public_key`. Ports are exposed as `host:host_port`, and hostnames and TLS are out of scope.
-- **Capabilities:** Docker-in-workload, nesting and similar are enabled only when the listing grants them.
+- **Access:** SSH uses only the tenant's `ssh_public_key`. Ports are exposed as `host:host_port`.
+- **Hostnames and TLS:** outside the provider protocol. A provider never owns a domain, runs ACME or terminates TLS, and never holds a tenant's certificate key. A stable HTTPS name for a workload is the job of a **Workload Gateway**, a separate TOON app keyed by `workload_id` (ADR 0013, *Proposed*; §11, item 6). Until one exists, a tenant that wants HTTPS terminates it inside its own workload.
+- **Capabilities:** Docker-in-workload, nesting and similar are enabled only when the listing grants them, and mean what §4.4 says they mean.
 - **Refusals:** the provider MAY refuse any image by its own policy. It SHOULD answer that refusal on `availability` first.
 
 ---
@@ -364,13 +473,12 @@ A provider MAY set `hidden: true` only if all of these hold (ADR 0008):
 
 ## 11. Open items
 
-1. **Kind allocation** for `K_PROFILE`, `K_LISTING`, `K_LIVENESS`, `K_LEASE_REQUEST`, `K_EVICTION`, `K_TAKEOVER`, `K_IMAGE`, `K_BLOB` and `K_TEMPLATE`. Check the NIPs kind table and TOON's existing kinds first; Paygress's `38383` collides with NIP-69.
-2. **Label vocabulary:** the allowed `isolation`, `arch`, `gpu` and capability values, and how to add more.
-3. **Large Blob Records:** a record over one store data item (~700 parts at 100 KiB) needs paging or a larger `part_size`.
-4. **Timing constants:** the 300 s request window, the 30 s sweep, and the takeover settle window are first guesses.
-5. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
-6. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
-7. **Later rounds:** reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, hostnames and TLS, more tokens, and KVM workloads.
+1. **Label vocabulary:** §4.4 fixes `isolation`, `arch`, and the `docker` and `nesting` capabilities. Still open: `gpu:<model>` naming, and how a capability beyond the `x-` prefix gets added.
+2. **Large Blob Records:** a record over one store data item (~700 parts at 100 KiB) needs paging or a larger `part_size`.
+3. **Timing constants:** the 300 s request window, the 30 s sweep, and the takeover settle window are first guesses.
+4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
+5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
+6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. The gateway itself is unspecified. Its first open question is authority: `.status` (§6.5) needs the tenant's signature, so a gateway cannot re-resolve a workload after a Takeover without a delegation v1 does not define (ADR 0005). Also unspecified: which of a spawn's `ports` is the HTTP one. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
 
 ---
 
@@ -388,3 +496,41 @@ v1 is developed against `infra/sandbox`, then pointed at production URLs.
 | Settlement | Solana mock USDC (the hub's client leg) and anvil mock USDC; a provider connector copies `conf/connector-store.toml` |
 | Provider connector | Level 2 shape (README §5); tenants may pay it directly or through the hub |
 | Hidden Provider | the sandbox `hs` profile |
+
+### A.1 The `ci` Listing
+
+The sandbox provider (`g.toon.provider`) sells a `ci` tier: the tier a workflow runner buys when it needs `act`, or any other tool that drives a Docker daemon, to work inside the workload. It is the worked example of a `docker` grant (§4.4), and the one target the Milestone 1 smoke and a tenant-side runner share.
+
+Content:
+
+```json
+{
+  "version": 1,
+  "resources": { "cpu_millicores": 2000, "memory_mb": 4096, "storage_gb": 10 },
+  "arch": "amd64",
+  "lease_interval_s": 600,
+  "price": 5000,
+  "capabilities": ["docker"]
+}
+```
+
+Tags:
+
+```
+["d", "ci"]
+["a", "10432:<provider pubkey>:"]                  the sandbox provider's Profile (§4.2)
+["L", "toon.network"]
+["l", "isolation:shared-kernel", "toon.network"]
+["l", "arch:amd64", "toon.network"]
+["t", "docker"]
+```
+
+Its paid routes are `g.toon.provider.ci.v1.spawn` and `g.toon.provider.ci.v1.extend` (§5).
+
+A tenant selecting for CI matches `["t", "docker"]`, and gets a workload whose `/var/run/docker.sock` is its own daemon's — within the 2000 millicores, 4 GiB and 10 GB the tier sells, that daemon's own containers and image layers included (§4.4). Nested images are `amd64`, like the tier. A provider publishes this Listing only once its backend supplies that per-lease daemon; publishing `["t", "docker"]` without one is a Listing that lies (§4.4).
+
+---
+
+## Appendix B. Wire fixtures
+
+Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a signed Lease Request per `op` with its packet body (§6.1.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only. `fixtures/check.mjs` verifies the copy with no dependencies. Warm Standby surfaces (§7) have no fixtures until Milestone 3; the README says which.
