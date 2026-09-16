@@ -5,7 +5,9 @@
 // over that id by `pubkey` (or invalid, for the one case that requires it),
 // every signed request body is exactly `{ "request": <event> }`, every event
 // is the kind its `kind_name` says, and the routes in `routes.listing` are the
-// ones the Listing events derive to.
+// ones the Listing events derive to — the paid `.spawn` and `.extend` of
+// every Listing, plus `.standby` and `.standby.extend` at `standby_price` for
+// exactly the Listings that carry one.
 //
 //     node docs/spec/fixtures/check.mjs            # checks ./wire
 //     node docs/spec/fixtures/check.mjs <dir>      # checks another copy
@@ -181,6 +183,14 @@ for (const file of files) {
   if (surface === 'directory') {
     report(doc.event.pubkey === constants.provider.public_key, `${file}: signed by the fixture provider`);
     report(hasTag(doc.event, ['L', constants.label]), `${file}: carries ["L", "${constants.label}"]`);
+    // A Takeover (spec §7.1) is addressed by the workload id the whole
+    // Standby Set shares, and names the primary it claims from. The signer
+    // is the STANDBY: a primary never announces its own takeover.
+    if (kase === 'takeover') {
+      report(tagValue(doc.event, 'd') === doc.content.workload_id, `${file}: d is the workload id`);
+      report(doc.content.primary === constants.primary_provider.public_key, `${file}: primary is the set's index 0`);
+      report(doc.event.pubkey !== doc.content.primary, `${file}: the standby signs it, not the primary`);
+    }
   }
 
   // The Image Registry entry, the Blob Record and the Template (spec §8) are
@@ -260,7 +270,9 @@ for (const file of files) {
 // the Profile, and compare with the provider's own table.
 {
   const profile = load('directory.profile.json');
-  const routes = new Set(load('routes.listing.json').routes.map((r) => r.prefix));
+  const table = load('routes.listing.json').routes;
+  const routes = new Set(table.map((r) => r.prefix));
+  const priced = new Map(table.map((r) => [r.prefix, r]));
   const addr = profile.content.ilp_address;
   for (const file of files.filter((f) => f.startsWith('directory.listing'))) {
     const listing = load(file);
@@ -269,6 +281,20 @@ for (const file of files) {
     for (const op of ['spawn', 'extend']) {
       const prefix = `${addr}.${name}.v${version}.${op}`;
       report(routes.has(prefix), `${file}: derives to route ${prefix}`);
+    }
+    // The standby routes exist for exactly the listings that price them
+    // (§4.2, §5): `standby_price` present means both rows at that price,
+    // absent means neither — a connector must never terminate a route the
+    // provider did not price, and it must never sell held capacity free.
+    const standbyPrice = listing.content.standby_price;
+    for (const op of ['standby', 'standby.extend']) {
+      const prefix = `${addr}.${name}.v${version}.${op}`;
+      const row = priced.get(prefix);
+      if (standbyPrice === undefined) {
+        report(row === undefined, `${file}: prices no standby, so there is no route ${prefix}`);
+      } else {
+        report(row?.price === standbyPrice, `${file}: derives to route ${prefix} at standby_price ${standbyPrice}`);
+      }
     }
     report(
       tagValue(listing.event, 'a') === `${constants.kinds.K_PROFILE}:${profile.event.pubkey}:`,
