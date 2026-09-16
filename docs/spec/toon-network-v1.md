@@ -119,6 +119,48 @@ Content is JSON:
 
 A provider is **live on a relay** while that relay holds an unexpired `K_LIVENESS` from it.
 
+### 4.4 Label vocabulary
+
+The values a relay matches on come from a fixed vocabulary. A tenant picks a Listing by these tags alone, so a value MUST mean the same thing on every provider.
+
+| Tag | Values |
+|---|---|
+| `l` `isolation:<value>` | `shared-kernel`, `dedicated-host` (§4.1) |
+| `l` `arch:<value>` | `amd64`, `arm64` (§4.2) |
+| `l` `gpu:<model>` | open (§11, item 2) |
+| `t` `<capability>` | `docker`, `nesting` |
+
+- A Listing MUST carry one `["t", "<capability>"]` tag per entry in `capabilities`, and MUST NOT carry a `t` tag for a capability it does not grant.
+- A tenant MUST ignore a capability value this section does not define, and MUST NOT read an unknown value as implying a known one. A provider experimenting with a capability before it is specified here SHOULD prefix it `x-`.
+- Capabilities are granted by the Listing alone (ADR 0004). A spawn never names one (§6.2).
+
+#### `docker`
+
+A lease from a Listing that grants `docker` runs a workload with a **Docker-compatible daemon of its own**.
+
+- **Reachability.** The daemon MUST be reachable from inside the workload at the conventional socket path `/var/run/docker.sock`. A tenant may assume a client with no `DOCKER_HOST` set finds it; a provider MAY set `DOCKER_HOST` as well.
+- **Scope.** The daemon MUST be scoped to that one lease. Its images, containers, volumes and networks belong to that lease, are invisible to every other lease, and are destroyed when the lease ends (§6.7).
+- **Never the host daemon.** The provider MUST NOT expose the daemon it runs its own workloads with, nor any daemon shared between leases, to a workload: not by bind-mounting its socket, not through a device, not over TCP, and not by proxying it. A provider app that itself drives a host daemon to create workloads is unaffected — that socket stays on the provider's side of the workload boundary.
+- **Reference shape.** A per-lease `dind` sidecar — a second container in the lease's isolation unit, sharing a private network with the workload, whose socket is the only one the workload sees — is the reference implementation. A backend MAY run an equivalent (a rootless daemon inside the workload, a daemon inside a nested VM) if it has the same scope and isolation, and the backend MUST document which it runs.
+- **Image pulls.** What the lease's daemon pulls is ordinary workload egress: it reaches exactly what the provider's egress policy allows that lease and nothing more. §8.4 does not apply to it — the Image Registry names the lease's own image, never the images a tenant pulls inside it — and the provider's own image cache MUST NOT be shared into the daemon. A provider whose egress policy blocks public registries SHOULD NOT grant `docker`, because a daemon that cannot pull cannot be used. For a Hidden Provider, nested pulls leave through `anon` like all other egress (§10).
+- **Privilege.** Granting `docker` is the provider accepting that it will run, per lease, a component that needs elevated privileges on its host — classically a privileged `dind` container. That is why it is a per-Listing decision and never a per-spawn one. It gives the **workload container itself** no extra Linux capabilities, no host mounts and no device mappings, and a spawn still may not ask for any (§6.2, ADR 0004). A provider on `shared-kernel` isolation that grants `docker` is accepting that privileged component on the kernel its other leases share.
+- **Resource accounting.** The Listing's `resources` bound the whole lease: the workload, its daemon, and every container that daemon runs. The provider MUST enforce `cpu_millicores` and `memory_mb` across that unit as a whole, not per container. Nested image layers and volumes count against `storage_gb`, and against `volume_gb` when they sit on the persistent volume. A lease that outgrows its budget is treated like any other overrun: the provider MAY throttle it, MAY let the kernel kill it, and MAY evict it (§6.7).
+- **Arch.** Nested containers run on the same machine, so the Listing's `arch` is their architecture too. `docker` promises no emulation: a pull of another architecture inside the workload MAY fail, and a provider that does offer emulation offers it outside this spec.
+- **Not included.** `docker` grants no nested VMs, no host network, no host devices and no GPU — a GPU comes from `resources.gpu`.
+
+#### `nesting`
+
+A lease from a Listing that grants `nesting` may create **isolation units of its own** — containers, sandboxes or virtual machines — with whatever mechanism its image brings: user namespaces, a container runtime it ships, or a hypervisor.
+
+- **How it differs from `docker`.** `docker` is a service the provider supplies at a known path; `nesting` is a permission the provider extends to tenant code. Under `docker` the privileged component is one the provider built and controls; under `nesting` the workload itself holds the kernel privileges its mechanism needs.
+- **Neither implies the other.** A Listing granting `docker` does not grant `nesting`: the workload may drive the daemon it was given and nothing else. A Listing granting `nesting` puts nothing at `/var/run/docker.sock`. A tenant that needs both MUST pick a Listing whose `capabilities` contains both.
+- **Privilege.** A provider MUST NOT grant `nesting` unless it accepts tenant-supplied code holding those privileges; `isolation: dedicated-host` (§4.1) is the expected shape. Which devices a `nesting` lease is given — `/dev/kvm`, `/dev/fuse` and the like — is the provider's decision, and it SHOULD document that decision. A spawn still names no device (§6.2, ADR 0004).
+- **Resource accounting** and **arch** are as for `docker`: everything nested counts against the Listing's `resources`, and nested guests run on the Listing's `arch`.
+
+#### Asking for a capability in a spawn
+
+A spawn carries no capability field, and a provider MUST NOT accept one (§6.2). Where a provider can recognise that a spawn is asking for a capability the route's Listing does not grant — a field outside the §6.2 table, or a request convention its backend documents — it MUST refuse the spawn with `invalid_request` rather than start a workload that cannot do what was asked of it.
+
 ---
 
 ## 5. Routes
@@ -344,7 +386,7 @@ A blob that fails verification is discarded, and the next source is tried. A blo
 
 - **v1 workloads are OCI containers** (ADR 0001 scope; Paygress Docker backend).
 - **Access:** SSH uses only the tenant's `ssh_public_key`. Ports are exposed as `host:host_port`, and hostnames and TLS are out of scope.
-- **Capabilities:** Docker-in-workload, nesting and similar are enabled only when the listing grants them.
+- **Capabilities:** Docker-in-workload, nesting and similar are enabled only when the listing grants them, and mean what §4.4 says they mean.
 - **Refusals:** the provider MAY refuse any image by its own policy. It SHOULD answer that refusal on `availability` first.
 
 ---
@@ -365,7 +407,7 @@ A provider MAY set `hidden: true` only if all of these hold (ADR 0008):
 ## 11. Open items
 
 1. **Kind allocation** for `K_PROFILE`, `K_LISTING`, `K_LIVENESS`, `K_LEASE_REQUEST`, `K_EVICTION`, `K_TAKEOVER`, `K_IMAGE`, `K_BLOB` and `K_TEMPLATE`. Check the NIPs kind table and TOON's existing kinds first; Paygress's `38383` collides with NIP-69.
-2. **Label vocabulary:** the allowed `isolation`, `arch`, `gpu` and capability values, and how to add more.
+2. **Label vocabulary:** §4.4 fixes `isolation`, `arch`, and the `docker` and `nesting` capabilities. Still open: `gpu:<model>` naming, and how a capability beyond the `x-` prefix gets added.
 3. **Large Blob Records:** a record over one store data item (~700 parts at 100 KiB) needs paging or a larger `part_size`.
 4. **Timing constants:** the 300 s request window, the 30 s sweep, and the takeover settle window are first guesses.
 5. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
@@ -388,3 +430,35 @@ v1 is developed against `infra/sandbox`, then pointed at production URLs.
 | Settlement | Solana mock USDC (the hub's client leg) and anvil mock USDC; a provider connector copies `conf/connector-store.toml` |
 | Provider connector | Level 2 shape (README §5); tenants may pay it directly or through the hub |
 | Hidden Provider | the sandbox `hs` profile |
+
+### A.1 The `ci` Listing
+
+The sandbox provider (`g.toon.provider`) sells a `ci` tier: the tier a workflow runner buys when it needs `act`, or any other tool that drives a Docker daemon, to work inside the workload. It is the worked example of a `docker` grant (§4.4), and the one target the Milestone 1 smoke and a tenant-side runner share.
+
+Content:
+
+```json
+{
+  "version": 1,
+  "resources": { "cpu_millicores": 2000, "memory_mb": 4096, "storage_gb": 10 },
+  "arch": "amd64",
+  "lease_interval_s": 600,
+  "price": 5000,
+  "capabilities": ["docker"]
+}
+```
+
+Tags:
+
+```
+["d", "ci"]
+["a", "<the provider's Profile address, §4.2>"]
+["L", "toon.network"]
+["l", "isolation:shared-kernel", "toon.network"]
+["l", "arch:amd64", "toon.network"]
+["t", "docker"]
+```
+
+Its paid routes are `g.toon.provider.ci.v1.spawn` and `g.toon.provider.ci.v1.extend` (§5).
+
+A tenant selecting for CI matches `["t", "docker"]`, and gets a workload whose `/var/run/docker.sock` is its own daemon's — within the 2000 millicores, 4 GiB and 10 GB the tier sells, that daemon's own containers and image layers included (§4.4). Nested images are `amd64`, like the tier. A provider publishes this Listing only once its backend supplies that per-lease daemon; publishing `["t", "docker"]` without one is a Listing that lies (§4.4).
