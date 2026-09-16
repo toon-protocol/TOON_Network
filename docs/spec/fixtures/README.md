@@ -52,7 +52,7 @@ Each file is named `<surface>.<case>.json` and carries a `fixture` header (`surf
 |---|---|---|
 | `availability.would_run.json` | `<addr>.availability` | Free, unsigned, `{ "would_run": true }` |
 | `availability.refused.json` | `<addr>.availability` | HTTP 200 with `would_run: false`, `error`, `message` (a version not on sale) |
-| `availability.image_unresolved.json` | `<addr>.availability` | The `refused_image` a tenant should meet here rather than buy on `.spawn`: an image named by digest alone |
+| `availability.image_unresolved.json` | `<addr>.availability` | The `refused_image` a tenant should meet here rather than buy on `.spawn`: an image named by digest alone for which no relay in the Relay Set holds a Blob Record, so no source can serve it (§8.4) |
 | `spawn.ok.json` | `<addr>.basic.v1.spawn` | Body is `lease_request.spawn`'s packet body; answer has `role`, `expires_at = now + 3600`, `access` |
 | `extend.ok.json` | `<addr>.basic.v1.extend` | Unsigned `{ "workload_id" }`; `expires_at` grows by one interval |
 | `status.running.json` | `<addr>.status` | `state: "running"`, `access` present |
@@ -64,8 +64,8 @@ Each file is named `<surface>.<case>.json` and carries a `fixture` header (`surf
 | File | Form | Answer |
 |---|---|---|
 | `spawn_image.reference.json` | `{ reference, digest }` | 200: pulled as `reference@digest` from an upstream registry. Also carries the informational `template`, which the provider parses and never reads (ADR 0004) |
-| `spawn_image.registry_entry.json` | `{ digest, registry_entry: { address, relay } }` | 422 `refused_image`: this provider does not resolve the Image Registry (§8.4) yet |
-| `spawn_image.digest_only.json` | `{ digest }` | 422 `refused_image`: the same message, and refused before capacity is counted or any container is created |
+| `spawn_image.registry_entry.json` | `{ digest, registry_entry: { address, relay } }` | 200: resolved through the entry at `address` (`registry.image_entry`), every blob fetched from the source the entry names — Blob Record and parts from the TOON store, the base layer from upstream by digest — verified, cached, loaded as an OCI layout and run by image id (§8.4) |
+| `spawn_image.digest_only.json` | `{ digest }` | 200: no entry and no relay hint, so every blob is found through the Blob Records the Relay Set holds under `#x = <hex>`, whoever signed them; each part and blob is verified before use (§8.4 step 3, ADR 0006) |
 
 A fourth shape — `reference` together with `registry_entry`, a `digest` that is not `sha256:` plus 64 lowercase hex, a `registry_entry.address` that does not name kind `30434` — is `invalid_request`; `error.invalid_request.json` is the fixture for that class of refusal.
 
@@ -119,7 +119,7 @@ Warm Standby is not implemented in Milestone 1, so there are no fixtures for `<a
 The fixtures are what the Milestone 1 provider does. Where the spec draft and the provider disagree, the fixtures side with the code and the disagreement is listed here so it is resolved on purpose, not by accident:
 
 - **Availability body.** `{ "listing", "version", "image": { … } }`, not §6.4's `image_digest` and `role`. The `image` is the same three-form object a spawn carries.
-- **The Image Registry forms are `refused_image`, not resolved.** The provider parses all three forms of §6.2's `image`, and answers both Image Registry forms with `refused_image` and a message saying it does not yet resolve §8.4. That is the fixtures' state of the world, not a permanent rule; when the fetcher lands, `spawn_image.registry_entry` and `spawn_image.digest_only` become successful spawns and these files change. §8.4 now states the interim answer so a tenant can rely on it.
+- **An entry that omits a blob is not fatal by itself.** §8.1 says `blobs` MUST be complete, and the publisher tool refuses to publish an incomplete entry; the provider, though, runs the full §8.4 chain for every blob, so a blob the entry does not list is still asked of the Relay Set and is `refused_image` only when nothing serves it. The Milestone 1 `{ reference, digest }` form consults no Image Registry and no Relay Set at all: the daemon pulls `reference@digest` itself.
 - **`min_resources` and `ports` in a Template.** §8.3 wrote both as `{…}`; the fixtures use the shapes the rest of the protocol already has — a Listing's `resources` (§4.2) and a spawn's `ports` (§6.2). §8.3 has been corrected to say so.
 - **The `x` tag carries bare hex.** §8.1 and §8.2 wrote `"<digest hex>"` and `"<hex>"`; the provider writes the digest WITHOUT its `sha256:` prefix in both, while `d` keeps the prefix. §8.1 and §8.2 have been corrected to say so, as has the rule that a Blob Record part's `sha256` is bare hex too.
 - **The §8 events carry `["L", "toon.network"]`.** §8 did not say so; the builders add it, and §8 has been corrected. They are signed by a publisher, never by a provider, which is why `constants.json` carries a fourth test key.
