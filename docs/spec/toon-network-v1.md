@@ -366,12 +366,14 @@ The signer MUST be the lease's tenant. The provider destroys the workload or rel
 ### 6.7 Lease states and endings
 
 ```
-standalone/primary:   Provisioning ──▶ Running ──▶ Ended(expiry | termination | eviction)
+standalone:           Provisioning ──▶ Running ──▶ Ended(expiry | termination | eviction)
+primary:              Provisioning ──▶ Running ⇄ Stopped ──▶ Ended(…)
 standby:              Reserved ──takeover──▶ Running ──▶ Ended(…)
                       Reserved ──▶ Ended(expiry | termination | eviction)
 ```
 
-- **On the wire:** `status` (§6.5) answers the state as `"provisioning"`, `"reserved"`, `"running"` or `{ "ended": "expiry" | "termination" | "eviction" }`. `Reserved` is a Warm Standby before Takeover: the capacity is held and paid for, nothing runs, and the answer carries no `access`.
+- **On the wire:** `status` (§6.5) answers the state as `"provisioning"`, `"reserved"`, `"running"`, `"stopped"` or `{ "ended": "expiry" | "termination" | "eviction" }`. `Reserved` is a Warm Standby before Takeover: the capacity is held and paid for, nothing runs, and the answer carries no `access`.
+- **Stopped:** a primary that stopped its own workload under §7.1's self-stop rule. The lease is live and paid to its `expires_at` like any other — it holds its capacity slot and its `workload_id`, `.extend` still adds an interval at the running price, and the sweep still ends it — but the workload is off, so the answer carries no `access`. Only a primary reaches it, and only §7.1 moves a lease into or out of it. A provider MUST persist it: a restart must not start again what the rule stopped.
 - **Reservations count:** a `Reserved` lease holds its `workload_id` and its capacity slot exactly as a running one does, so Liveness `available` (§4.3) and `availability` (§6.4) both subtract it.
 - **Expiry:** the provider MUST sweep at least every 30 s and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
 - **Eviction:** a provider MAY evict a lease for abuse, policy or maintenance. It MUST publish an Eviction Notice.
@@ -400,7 +402,13 @@ A standby watches the primary's Liveness on the **primary's** Relay Set, read fr
 4. **If it won:** the standby starts the workload and the lease becomes Running. From then on the lease needs a `.extend` (full price) before its current `expires_at`, or it expires. `.standby.extend` is refused.
 5. **If it lost:** the standby stays Reserved, and watches the winner as its new primary.
 
-**Primary self-stop:** a primary that cannot publish Liveness to a strict majority of its own Relay Set for 5 × `liveness_cadence_s` MUST stop its workload. Its lease stays paid until `expires_at`, and it may restart the workload once it regains a majority and no Takeover event exists for the lease.
+**Primary self-stop:** a primary that cannot publish Liveness to a strict majority of its own Relay Set for 5 × `liveness_cadence_s` MUST stop its workload, so that a partitioned primary does not keep running beside a Takeover.
+
+- **Counting:** each publication of Liveness (§4.3) reports which relays of the Relay Set took it; a cadence counts against the primary unless a strict majority took it. A publication that could not be attempted at all counts the same way: no relay took it. One publication that reached a majority, anywhere inside the five, restarts the count. A provider with no Relay Set has no majority to lose and is not bound by the rule.
+- **Which leases:** every lease it holds as the primary of a Standby Set. A standalone lease (§6.2) is never stopped by this rule: no standby is waiting to take it over.
+- **Stopping is not ending:** the lease stays paid until `expires_at` and stays a lease — `status` answers `stopped` (§6.7) with no `access`, `.extend` still adds an interval at the running price, and the expiry sweep still ends it. The tenant is charged nothing extra for the stop.
+- **Restarting:** on regaining a majority, the primary MUST query kind `30433` for `d = <workload_id>` from pubkeys in the lease's `standby_set`, on its own Relay Set. Only if none exists may it start the workload again. If one exists, the workload stays stopped for the rest of the lease: the set has moved on, and the provider SHOULD record that so no later reading starts a second copy beside the new primary's.
+- **After a restart of the provider:** a provider that comes back holding a primary lease with a `standby_set` MUST make the same query before it treats that lease's workload as live, and stop the workload if a Takeover exists. A provider whose process was down is the partition this rule is about, and it counted no cadences while it was.
 
 **No state moves on Takeover.** The standby starts from the image, and data replication is the workload's own job.
 
@@ -508,7 +516,7 @@ A provider MAY set `hidden: true` only if all of these hold (ADR 0008):
 
 1. **Label vocabulary:** §4.4 fixes `isolation`, `arch`, and the `docker` and `nesting` capabilities. Still open: `gpu:<model>` naming, and how a capability beyond the `x-` prefix gets added.
 2. **Large Blob Records:** a record over one store data item (~700 parts at 100 KiB) needs paging or a larger `part_size`.
-3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger and the two-cadence settle window are first guesses.
+3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger, the two-cadence settle window and the five-cadence primary self-stop are first guesses.
 4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
 5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
 6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. The gateway itself is unspecified. Its first open question is authority: `.status` (§6.5) needs the tenant's signature, so a gateway cannot re-resolve a workload after a Takeover without a delegation v1 does not define (ADR 0005). Also unspecified: which of a spawn's `ports` is the HTTP one. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
