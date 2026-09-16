@@ -319,6 +319,7 @@ Signed by the publisher, with `d = <template name>`.
 
 - **Content:** `{ "version": n, "image": { "digest", "registry_entry"? }, "ports", "data_path"?, "env_fixed": {…}, "env_tenant": ["NAME", …], "min_resources"?: {…} }`
 - **No capabilities:** a Template grants nothing (ADR 0004).
+- **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Network and belong to rig, outside the `toon.network` label (ADR 0014, proposed).
 - **Who expands it:** in v1 the **tenant** expands a Template into a spawn. The provider never reads Templates, and `template` in a spawn is informational (§11, item 6).
 
 ### 8.4 Resolving and fetching an image (provider)
