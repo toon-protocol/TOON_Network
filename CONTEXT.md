@@ -76,6 +76,10 @@ _Avoid_: Failover, promotion
 A provider whose network location is not revealed to tenants or observers by anything it publishes or serves.
 _Avoid_: Anonymous provider, onion provider
 
+**Workload Gateway**:
+A TOON app that fronts a workload at a stable hostname, resolving its workload id to whichever provider is currently running it.
+_Avoid_: Gateway (unqualified: the TOON store's gateway is a different thing), ingress, load balancer, reverse proxy
+
 ### Directory
 
 **Provider Directory**:

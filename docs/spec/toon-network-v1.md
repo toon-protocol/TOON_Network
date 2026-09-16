@@ -343,7 +343,8 @@ A blob that fails verification is discarded, and the next source is tried. A blo
 ## 9. Workload rules
 
 - **v1 workloads are OCI containers** (ADR 0001 scope; Paygress Docker backend).
-- **Access:** SSH uses only the tenant's `ssh_public_key`. Ports are exposed as `host:host_port`, and hostnames and TLS are out of scope.
+- **Access:** SSH uses only the tenant's `ssh_public_key`. Ports are exposed as `host:host_port`.
+- **Hostnames and TLS:** outside the provider protocol. A provider never owns a domain, runs ACME or terminates TLS, and never holds a tenant's certificate key. A stable HTTPS name for a workload is the job of a **Workload Gateway**, a separate TOON app keyed by `workload_id` (ADR 0012, *Proposed*; §11, item 7). Until one exists, a tenant that wants HTTPS terminates it inside its own workload.
 - **Capabilities:** Docker-in-workload, nesting and similar are enabled only when the listing grants them.
 - **Refusals:** the provider MAY refuse any image by its own policy. It SHOULD answer that refusal on `availability` first.
 
@@ -370,7 +371,7 @@ A provider MAY set `hidden: true` only if all of these hold (ADR 0008):
 4. **Timing constants:** the 300 s request window, the 30 s sweep, and the takeover settle window are first guesses.
 5. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
 6. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
-7. **Later rounds:** reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, hostnames and TLS, more tokens, and KVM workloads.
+7. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0012 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. The gateway itself is unspecified. Its first open question is authority: `.status` (§6.5) needs the tenant's signature, so a gateway cannot re-resolve a workload after a Takeover without a delegation v1 does not define (ADR 0005). Also unspecified: which of a spawn's `ports` is the HTTP one. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
 
 ---
 
