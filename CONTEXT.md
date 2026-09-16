@@ -84,6 +84,10 @@ _Avoid_: Replica set, cluster, group
 The moment a warm standby starts running the workload of a lease whose provider went silent.
 _Avoid_: Failover, promotion
 
+**Self-stop**:
+A primary stopping its own workload because it can no longer publish liveness to a majority of its relay set, leaving the lease paid and nothing running.
+_Avoid_: Fencing, self-eviction, shutdown
+
 **Hidden Provider**:
 A provider whose network location is not revealed to tenants or observers by anything it publishes or serves.
 _Avoid_: Anonymous provider, onion provider
