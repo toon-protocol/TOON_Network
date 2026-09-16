@@ -1,20 +1,33 @@
 #!/usr/bin/env node
 // Checks the wire fixtures the way a tenant implementation would, with
-// nothing but Node's standard library: every event's `id` is the SHA-256 of
-// its NIP-01 serialization, every `sig` is a valid BIP-340 Schnorr signature
-// over that id by `pubkey` (or invalid, for the one case that requires it),
-// every signed request body is exactly `{ "request": <event> }`, every event
-// is the kind its `kind_name` says, and the routes in `routes.listing` are the
-// ones the Listing events derive to — the paid `.spawn` and `.extend` of
-// every Listing, plus `.standby` and `.standby.extend` at `standby_price` for
-// exactly the Listings that carry one.
+// nothing but Node's standard library. It is the round trip a tenant client
+// needs (TOON_Network #16, acceptance criterion 4), in both directions:
+//
+//   verify   every event's `id` is the SHA-256 of its NIP-01 serialization,
+//            every `sig` is a valid BIP-340 Schnorr signature over that id by
+//            `pubkey` (or invalid, for the one case that requires it), every
+//            signed request body is exactly `{ "request": <event> }`, every
+//            event is the kind its `kind_name` says, every error body is
+//            `{ error, message }` with a spec §5 code, and the routes in
+//            `routes.listing` are the ones the Listing events derive to — the
+//            paid `.spawn` and `.extend` of every Listing, plus `.standby`
+//            and `.standby.extend` at `standby_price` for exactly the
+//            Listings that carry one;
+//   produce  from the test keys in `constants.json`, every event is rebuilt
+//            from its fields — a Lease Request from its PARSED `content` and
+//            its tags — and signed with all-zero auxiliary randomness, and
+//            the result must have the same `id` and the same `sig` byte for
+//            byte; every packet body is rebuilt from the rebuilt event and
+//            must equal the fixture's.
 //
 //     node docs/spec/fixtures/check.mjs            # checks ./wire
 //     node docs/spec/fixtures/check.mjs <dir>      # checks another copy
 //
 // Exit code 0 when everything passes, 1 otherwise. The secp256k1 arithmetic
-// below is a plain BigInt implementation for verification only: slow, and
-// not for use anywhere a signature is produced or a key is handled.
+// below is a plain BigInt implementation for checking fixtures only: slow,
+// not constant-time, and not for use anywhere a real key is handled. The
+// signing half exists so that the fixture signatures are shown to be
+// reproducible from the published keys; real signers use fresh randomness.
 
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -110,12 +123,57 @@ function schnorrVerify(pubkeyHex, messageHex, sigHex) {
   return R !== null && (R[1] & 1n) === 0n && R[0] === r;
 }
 
+/** The x-only public key of a secret key, hex, and the BIP-340 secret
+ *  `d` (negated when the point's y is odd) that goes with it. */
+function keypair(secretHex) {
+  const d0 = BigInt('0x' + secretHex);
+  if (d0 <= 0n || d0 >= N) throw new Error('secret key out of range');
+  const P = mul(G, d0);
+  const d = (P[1] & 1n) === 0n ? d0 : N - d0;
+  return { P, d, pubkeyHex: toBytes32(P[0]).toString('hex') };
+}
+
+/** BIP-340 sign(sk, m, aux) with aux = 32 zero bytes — the fixtures' signing
+ *  rule (`constants.json` → `signing.aux_rand`) — so the output is the one
+ *  signature every fixture carries. Never use zero aux outside a fixture. */
+function schnorrSignZeroAux(secretHex, messageHex) {
+  const { P, d } = keypair(secretHex);
+  const m = Buffer.from(messageHex, 'hex');
+  const px = toBytes32(P[0]);
+  const aux = Buffer.alloc(32);
+  const t = toBytes32(d ^ toInt(taggedHash('BIP0340/aux', aux)));
+  const k0 = mod(toInt(taggedHash('BIP0340/nonce', t, px, m)), N);
+  if (k0 === 0n) throw new Error('nonce is zero');
+  const R = mul(G, k0);
+  const k = (R[1] & 1n) === 0n ? k0 : N - k0;
+  const rx = toBytes32(R[0]);
+  const e = mod(toInt(taggedHash('BIP0340/challenge', rx, px, m)), N);
+  return Buffer.concat([rx, toBytes32(mod(k + e * d, N))]).toString('hex');
+}
+
 // ── NIP-01 ──────────────────────────────────────────────────────────────────
 
 /** The string whose SHA-256 is the event id. JSON.stringify escapes exactly
  *  as NIP-01 requires (backslash, quote, and the control characters). */
 const nip01Serialization = (e) => JSON.stringify([0, e.pubkey, e.created_at, e.kind, e.tags, e.content]);
 const eventId = (e) => sha256(Buffer.from(nip01Serialization(e), 'utf8')).toString('hex');
+
+/** JSON with object keys sorted, for comparing two documents regardless of
+ *  key order (the fixtures are written with sorted keys; a tenant's
+ *  serialiser need not be). */
+const canonical = (v) =>
+  Array.isArray(v)
+    ? '[' + v.map(canonical).join(',') + ']'
+    : v !== null && typeof v === 'object'
+      ? '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + canonical(v[k])).join(',') + '}'
+      : JSON.stringify(v);
+
+/** Spec §5's error codes, in the order §5 lists them. */
+const ERROR_CODES = [
+  'unknown_workload', 'wrong_listing_version', 'not_tenant', 'workload_id_taken',
+  'refused_image', 'no_capacity', 'no_matching_arch', 'invalid_request',
+  'expired', 'not_standby', 'not_running', 'bad_signature', 'stale_request',
+];
 
 // ── the checks ──────────────────────────────────────────────────────────────
 
@@ -124,12 +182,26 @@ const dir = process.argv[2] ?? join(here, 'wire');
 const load = (name) => JSON.parse(readFileSync(join(dir, name), 'utf8'));
 
 let failures = 0;
+let checks = 0;
 function report(ok, what) {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
+  checks += 1;
   if (!ok) failures += 1;
 }
 
 const constants = load('constants.json');
+
+// The test keys: every fixture event is signed by one of them, so every one
+// can be re-signed. Each public key must derive from its secret key first.
+// Every key `constants.json` publishes is taken, not a fixed list, so a key
+// added for a later surface — the Standby Set peers of §7, which sign nothing
+// here but could — is checked and can sign a round trip.
+const secretKeys = {};
+for (const who of Object.keys(constants).filter((k) => constants[k]?.secret_key).sort()) {
+  const { secret_key, public_key } = constants[who];
+  report(keypair(secret_key).pubkeyHex === public_key, `constants: ${who}.public_key derives from ${who}.secret_key`);
+  secretKeys[public_key] = secret_key;
+}
 
 function checkEvent(where, event, { expectValidSig = true, kindName } = {}) {
   report(eventId(event) === event.id, `${where}: id is the sha256 of the NIP-01 serialization`);
@@ -143,6 +215,35 @@ function checkEvent(where, event, { expectValidSig = true, kindName } = {}) {
   }
 }
 
+/** Rebuild `event` from its fields — `content` given as the PARSED object
+ *  when the fixture carries one, so the string a tenant would sign is
+ *  re-serialised here rather than copied — sign it with the test key its
+ *  pubkey names and zero aux, and require the same `id` and `sig`. Returns
+ *  the rebuilt event, or null when it could not be rebuilt. */
+function roundTrip(where, event, { content, expectSameSig = true } = {}) {
+  const secret = secretKeys[event.pubkey];
+  report(secret !== undefined, `${where}: signed by one of constants.json's test keys`);
+  if (secret === undefined) return null;
+  const rebuilt = {
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags,
+    content: content === undefined ? event.content : JSON.stringify(content),
+  };
+  if (content !== undefined) {
+    report(rebuilt.content === event.content, `${where}: content re-serialises to the signed string (sorted keys, no whitespace)`);
+  }
+  rebuilt.id = eventId(rebuilt);
+  rebuilt.sig = schnorrSignZeroAux(secret, rebuilt.id);
+  report(rebuilt.id === event.id, `${where}: rebuilt event has the same id`);
+  report(
+    (rebuilt.sig === event.sig) === expectSameSig,
+    `${where}: re-signing with zero aux gives ${expectSameSig ? 'the same sig byte for byte' : 'a different sig, since this one is tampered'}`,
+  );
+  return rebuilt;
+}
+
 const hasTag = (event, cells) =>
   event.tags.some((t) => cells.every((c, i) => t[i] === c));
 const tagValue = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
@@ -154,6 +255,11 @@ const tagValues = (event, name) => event.tags.filter((t) => t[0] === name).map((
   const tampered = (good.sig[0] === '0' ? '1' : '0') + good.sig.slice(1);
   report(schnorrVerify(good.pubkey, good.id, tampered) === false, 'self-test: a tampered signature is rejected');
   report(schnorrVerify(good.pubkey, good.id, good.sig) === true, 'self-test: the untampered signature is accepted');
+  // And the signer must produce something the verifier accepts, with a
+  // different key giving a different signature.
+  const other = schnorrSignZeroAux(constants.other_tenant.secret_key, good.id);
+  report(schnorrVerify(constants.other_tenant.public_key, good.id, other), 'self-test: a signature this signer produces verifies');
+  report(other !== good.sig, 'self-test: a different key gives a different signature');
 }
 
 const files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
@@ -171,6 +277,17 @@ for (const file of files) {
       JSON.stringify(doc.packet_body) === JSON.stringify({ request: doc.event }),
       `${file}: packet_body is exactly { "request": <event> }`,
     );
+    const rebuilt = roundTrip(`${file} event`, doc.event, { content: doc.content });
+    if (rebuilt) {
+      report(
+        canonical({ request: rebuilt }) === canonical(doc.packet_body),
+        `${file}: packet_body rebuilt from the rebuilt event matches`,
+      );
+      report(
+        Object.keys(doc.packet_body).length === 1 && canonical(doc.packet_body.request) === canonical(rebuilt),
+        `${file}: the rebuilt packet body has the single key request`,
+      );
+    }
     report(doc.event.pubkey === constants.tenant.public_key, `${file}: signed by the fixture tenant`);
     report(tagValue(doc.event, 'p') === constants.provider.public_key, `${file}: p tag names the fixture provider`);
     report(tagValue(doc.event, 'op') === kase, `${file}: op tag is ${kase}`);
@@ -183,6 +300,7 @@ for (const file of files) {
 
   if (surface === 'directory') {
     report(doc.event.pubkey === constants.provider.public_key, `${file}: signed by the fixture provider`);
+    roundTrip(`${file} event`, doc.event);
     report(hasTag(doc.event, ['L', constants.label]), `${file}: carries ["L", "${constants.label}"]`);
     // A Takeover (spec §7.1) is addressed by the workload id the whole
     // Standby Set shares, and names the primary it claims from. The signer
@@ -191,6 +309,10 @@ for (const file of files) {
       report(tagValue(doc.event, 'd') === doc.content.workload_id, `${file}: d is the workload id`);
       report(doc.content.primary === constants.primary_provider.public_key, `${file}: primary is the set's index 0`);
       report(doc.event.pubkey !== doc.content.primary, `${file}: the standby signs it, not the primary`);
+    }
+    if (kase === 'eviction') {
+      report(['abuse', 'policy', 'maintenance', 'other'].includes(doc.content.reason), `${file}: reason is one of §6.7's codes`);
+      report(tagValue(doc.event, 'x') === doc.content.workload_id, `${file}: x tag is the workload id`);
     }
   }
 
@@ -201,6 +323,7 @@ for (const file of files) {
   // serve a record describing a different blob.
   if (surface === 'registry') {
     report(doc.event.pubkey === constants.publisher.public_key, `${file}: signed by the fixture publisher, not the provider`);
+    roundTrip(`${file} event`, doc.event);
     report(hasTag(doc.event, ['L', constants.label]), `${file}: carries ["L", "${constants.label}"]`);
     const d = tagValue(doc.event, 'd');
     if (kase === 'image_entry') {
@@ -259,6 +382,12 @@ for (const file of files) {
       kindName: 'K_LEASE_REQUEST',
     });
     report(Object.keys(doc.request_body).length === 1, `${file}: the body has no key besides request`);
+    const rebuilt = roundTrip(`${file} request_body.request`, doc.request_body.request, {
+      expectSameSig: kase !== 'bad_signature',
+    });
+    if (rebuilt && kase !== 'bad_signature') {
+      report(canonical({ request: rebuilt }) === canonical(doc.request_body), `${file}: request_body rebuilt from the rebuilt event matches`);
+    }
   }
 
   // A Standby Set (spec §6.2 step 3, §7): ONE signed spawn reaches every
@@ -295,8 +424,56 @@ for (const file of files) {
   }
 
   if (surface === 'error') {
-    report(doc.response_body.error === kase, `${file}: response error code is ${kase}`);
-    report(typeof doc.response_body.message === 'string', `${file}: response carries a message`);
+    const body = doc.response_body;
+    report(
+      canonical(Object.keys(body).sort()) === canonical(['error', 'message']),
+      `${file}: response body is exactly { error, message }`,
+    );
+    report(ERROR_CODES.includes(body.error), `${file}: error ${JSON.stringify(body.error)} is a spec §5 code`);
+    report(body.error === kase, `${file}: response error code is ${kase}`);
+    report(typeof body.message === 'string' && body.message.length > 0, `${file}: response carries a message`);
+    report(Number.isInteger(doc.response_status) && doc.response_status >= 400 && doc.response_status <= 499, `${file}: response_status is a 4xx (this provider's; a tenant reads error, not the status)`);
+  }
+
+  // Availability answers 200 either way; a refusal is the answer, with a §5
+  // code, not a transport failure.
+  if (surface === 'availability') {
+    report(doc.response_status === 200, `${file}: availability answers HTTP 200`);
+    const body = doc.response_body;
+    if (body.would_run === true) {
+      report(canonical(body) === canonical({ would_run: true }), `${file}: a positive answer is exactly { would_run: true }`);
+    } else {
+      report(body.would_run === false, `${file}: would_run is false`);
+      report(
+        canonical(Object.keys(body).sort()) === canonical(['error', 'message', 'would_run']),
+        `${file}: a refusal is exactly { would_run, error, message }`,
+      );
+      report(ERROR_CODES.includes(body.error), `${file}: error ${JSON.stringify(body.error)} is a spec §5 code`);
+    }
+    const image = doc.request_body.image;
+    report(image !== undefined && /^sha256:[0-9a-f]{64}$/.test(image.digest), `${file}: request carries the spawn's image object (ADR 0015)`);
+    const askKeys = canonical(Object.keys(doc.request_body).sort());
+    report(
+      askKeys === canonical(['image', 'listing', 'version']) ||
+        askKeys === canonical(['image', 'listing', 'role', 'version']),
+      `${file}: request body is exactly { listing, version, image } plus §6.4's optional role`,
+    );
+    if ('role' in doc.request_body) {
+      report(
+        ['primary', 'standby'].includes(doc.request_body.role),
+        `${file}: role is "primary" | "standby", the whole vocabulary §6.4 asks about`,
+      );
+    }
+  }
+
+  // A lease's state on the wire (§6.7): a string, or a one-key { ended } object.
+  if (doc.response_body && doc.response_status === 200 && 'state' in doc.response_body) {
+    const state = doc.response_body.state;
+    const ok =
+      ['provisioning', 'reserved', 'running', 'stopped'].includes(state) ||
+      (state !== null && typeof state === 'object' && canonical(Object.keys(state)) === canonical(['ended']) &&
+        ['expiry', 'termination', 'eviction'].includes(state.ended));
+    report(ok, `${file}: state is "provisioning" | "reserved" | "running" | "stopped" | { "ended": <how> }`);
   }
 }
 
@@ -340,5 +517,5 @@ for (const file of files) {
   }
 }
 
-console.log(`\n${files.length} fixtures, ${failures} failure${failures === 1 ? '' : 's'}`);
+console.log(`\n${files.length} fixtures, ${checks} checks, ${failures} failure${failures === 1 ? '' : 's'}`);
 process.exit(failures ? 1 : 0);

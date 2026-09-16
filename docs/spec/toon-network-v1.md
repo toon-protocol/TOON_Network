@@ -240,13 +240,15 @@ The provider's connector terminates these routes and forwards them to the provid
 - **Rate limits:** the provider SHOULD rate-limit free routes.
 - **Restarts:** adding or retiring a listing version is a connector config change and restart (ADR 0009).
 
-Every response is JSON. Errors use this shape, and on a paid route they are still billed (§2):
+Every response is JSON. Errors use this shape — exactly these two keys — and on a paid route they are still billed (§2):
 
 ```json
 { "error": "<code>", "message": "<human readable>" }
 ```
 
 Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workload_id_taken`, `refused_image`, `no_capacity`, `no_matching_arch`, `invalid_request`, `expired`, `not_standby`, `not_running`, `bad_signature`, `stale_request`.
+
+- **The body is the contract; the HTTP status is not.** A tenant reads `error`, never the status: the connector carries the response inside an ILP packet, and whether an HTTP status survives that at all is the connector's business. A provider MAY answer a refusal with any 4xx it finds fitting (the reference provider uses 400/403/404/409/422; Appendix B's fixtures record its mapping as `response_status`), and a tenant MUST NOT branch on it. `message` is for people and MAY change without notice.
 
 ---
 
@@ -264,7 +266,7 @@ This is a tenant-signed event carried in request bodies. The provider validates 
 
 #### 6.1.1 Signing and packet body encoding
 
-- **A NIP-01 event, nothing more.** A Lease Request is an ordinary Nostr event of kind `K_LEASE_REQUEST` signed by the tenant's Nostr key. Its `id` is the SHA-256 of the NIP-01 serialization `[0, <pubkey>, <created_at>, <kind>, <tags>, <content>]` (UTF-8, no whitespace, NIP-01 escaping), and `sig` is a BIP-340 Schnorr signature over that `id` by `pubkey`. Nothing TOON-specific is hashed or signed, so any NIP-01 library produces and verifies a Lease Request.
+- **A NIP-01 event, nothing more.** A Lease Request is an ordinary Nostr event of kind `4432` (`K_LEASE_REQUEST`, §3.1) signed by the tenant's Nostr key. Its `id` is the SHA-256 of the NIP-01 serialization `[0, <pubkey>, <created_at>, <kind>, <tags>, <content>]` (UTF-8, no whitespace, NIP-01 escaping), and `sig` is a BIP-340 Schnorr signature over that `id` by `pubkey`. Nothing TOON-specific is hashed or signed, so any NIP-01 library produces and verifies a Lease Request.
 - **Content.** `content` is the op's JSON object (§6.2, §6.5, §6.6) serialised to a string. A field the spec does not name, anywhere in it, MUST be refused as `invalid_request`, never dropped (ADR 0004).
 - **Packet body.** The request body of a signed route is the JSON object `{ "request": <event> }`: the signed event as a JSON object, unmodified, as the value of the single key `request`. It is not re-encoded, base64'd or wrapped further, and a body with any other key MUST be refused as `invalid_request`. This body is the HTTP body inside the connector's sealed envelope: the tenant seals the whole HTTP request to the provider's pinned `connector_seal_key` (§3, ADR 0011; connector ADR 0018), the connector unseals it and forwards plain HTTP, and the provider app reads the body as plaintext JSON and no payment header (§2).
 - **Verification order.** The provider verifies `id` and `sig` first (`bad_signature`), then the kind, the `p` tags and the `op` tag (`invalid_request`), then `expiration` and the window (`stale_request`), then replay (`stale_request`). This is the whole of §6.2 step 1, and every signed route runs it identically.
@@ -343,11 +345,11 @@ It responds with `{ "workload_id", "expires_at" }`.
 
 ### 6.4 Availability (free)
 
-**Request body:** `{ "listing": "<name>", "version": <n>, "image_digest": "sha256:…", "role"?: "primary" | "standby" }`
+**Request body:** `{ "listing": "<name>", "version": <n>, "image": { … }, "role"?: "primary" | "standby" }`, unsigned, where `image` is exactly the object a spawn would carry — any of §6.2's three forms, validated by the same rules (ADR 0015). A digest alone is not enough to say whether an image would run: with `registry_entry` the provider resolves it through the entry, and with `reference` through the upstream registry, and only the object says which. `role` is optional, and `primary` and `standby` are its whole vocabulary: `standalone` is a lease's role (§6.2) rather than a question — a spawn that names no Standby Set is standalone already — so it, any other value, and any field this section does not name are `invalid_request`.
 
-**Response:** `{ "would_run": true }` or `{ "would_run": false, "error": "<code>", "message": "…" }`
+**Response:** `{ "would_run": true }` or `{ "would_run": false, "error": "<code>", "message": "…" }`, always HTTP 200 — the refusal is the answer, not a transport failure.
 
-It applies §6.2 steps 2, 5 and 6 without starting anything. A positive answer is advice, not a reservation: a spawn that later fails is still billed (ADR 0003).
+It applies §6.2 steps 2, 5 and 6 without starting anything: `wrong_listing_version`, then the image (`refused_image`, `no_matching_arch`), then `no_capacity`. A positive answer is advice, not a reservation: a spawn that later fails is still billed (ADR 0003).
 
 With `role: "standby"` it answers whether a Warm Standby **would be reserved** here, and reserves nothing: the listing must price standbys — one that does not is refused `wrong_listing_version`, the same answer its `.standby` route would have given — and capacity is counted with reservations subtracted, exactly as for a running lease (§6.7). Omitting `role`, or `role: "primary"`, asks the ordinary question.
 
@@ -363,6 +365,8 @@ The signer MUST be the lease's tenant (`not_tenant`). The response has `workload
 
 The signer MUST be the lease's tenant. The provider destroys the workload or releases the reservation immediately. There is no refund.
 
+It responds with `{ "workload_id", "state" }`, where `state` is `{ "ended": "termination" }` (§6.7), so a tenant needs no second call to see that its lease is over. A lease that has already ended, however it ended, is `expired` (§6.3); a workload id this provider never leased is `unknown_workload`.
+
 ### 6.7 Lease states and endings
 
 ```
@@ -372,12 +376,13 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
                       Reserved ──▶ Ended(expiry | termination | eviction)
 ```
 
-- **On the wire:** `status` (§6.5) answers the state as `"provisioning"`, `"reserved"`, `"running"`, `"stopped"` or `{ "ended": "expiry" | "termination" | "eviction" }`. `Reserved` is a Warm Standby before Takeover: the capacity is held and paid for, nothing runs, and the answer carries no `access`. The `takeover` edge does not change the role — a standby that runs its workload still answers `role: "standby"` — and adds `takeover.winner` to the answer of every member the race settled at (§6.5), the losers included, which stay `Reserved`.
+- **On the wire** (`.status`, `.terminate`), `state` is a string for a state with nothing to say and a one-key object for one that has an ending: `"provisioning" | "reserved" | "running" | "stopped" | { "ended": "expiry" | "termination" | "eviction" }`. `provisioning` is a lease that is paid and holds its workload id and capacity while its workload starts; a tenant that sees it polls `.status` again.
+- **Reserved:** a Warm Standby before Takeover: the capacity is held and paid for, nothing runs, and the answer carries no `access`. The `takeover` edge does not change the role — a standby that runs its workload still answers `role: "standby"` — and adds `takeover.winner` to the answer of every member the race settled at (§6.5), the losers included, which stay `Reserved`.
 - **Stopped:** a primary that stopped its own workload under §7.1's self-stop rule. The lease is live and paid to its `expires_at` like any other — it holds its capacity slot and its `workload_id`, `.extend` still adds an interval at the running price, and the sweep still ends it — but the workload is off, so the answer carries no `access`. Only a primary reaches it, and only §7.1 moves a lease into or out of it. A provider MUST persist it: a restart must not start again what the rule stopped.
 - **Reservations count:** a `Reserved` lease holds its `workload_id` and its capacity slot exactly as a running one does, so Liveness `available` (§4.3) and `availability` (§6.4) both subtract it.
 - **Expiry:** the provider MUST sweep at least every 30 s and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
 - **Eviction:** a provider MAY evict a lease for abuse, policy or maintenance. It MUST publish an Eviction Notice.
-- **Eviction Notice** (kind `4433`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tag `["x", "<workload_id>"]`.
+- **Eviction Notice** (kind `4433`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tags `["x", "<workload_id>"]` and `["L", "toon.network"]` (the label every TOON Network event carries, §4). `reason` is one of `abuse` (the workload abused this provider or something reachable from it), `policy` (it broke a policy the provider states outside this protocol), `maintenance` (the provider needs the capacity back) or `other`; `message` says what happened in words; with `other` it is all a reader has to go on, so it SHOULD not be empty. A reader MUST NOT refuse a notice for a `reason` it does not know: a later version may add one.
 - **Persistence:** the provider MUST persist running leases and reservations across its own restarts.
 
 ---
@@ -437,7 +442,7 @@ Content is JSON:
 }
 ```
 
-- **Blob list:** `blobs` MUST list every blob reachable from `digest`: the index, the manifests, the configs and the layers.
+- **Blob list:** `blobs` MUST list every blob reachable from `digest`: the index, the manifests, the configs and the layers. This is the publisher's obligation, and a publishing tool MUST refuse to sign an incomplete entry; a provider does not refuse an entry for omitting a blob, it resolves that blob through the rest of §8.4's chain and fails only when nothing serves it.
 - **Tag:** `["x", "<digest hex>"]` — the hex ALONE, with no `sha256:` prefix, so an `#x` filter is over the same string whatever wrote it.
 - **Source:** `type` is `"toon-store"` or `"oci"` and nothing else in v1; a reader MUST refuse a source type it does not know rather than skip the blob.
 - **Moving a tag:** re-publishing the same `d` points the tag at a new image.
@@ -465,14 +470,14 @@ Signed by the publisher, with `d = <template name>`.
 - **Content:** `{ "version": n, "image": { "digest", "registry_entry"? }, "ports": [ { "container_port", "protocol" } ], "data_path"?, "env_fixed": {…}, "env_tenant": ["NAME", …], "min_resources"?: { "cpu_millicores", "memory_mb", "storage_gb", "gpu"? } }`
 - **Shapes it borrows:** `image` is §6.2's registry-entry or digest-alone form (never the upstream one — a Template names an image by content address); `ports` is a spawn's `ports` (§6.2); `min_resources` is a Listing's `resources` (§4.2), read as a floor for choosing a Listing rather than as a rule on any provider.
 - **No capabilities:** a Template grants nothing (ADR 0004).
-- **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Network and belong to rig, outside the `toon.network` label (ADR 0014, proposed).
+- **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Network and belong to rig, outside the `toon.network` label (ADR 0014).
 - **Who expands it:** in v1 the **tenant** expands a Template into a spawn. The provider never reads Templates, and `template` in a spawn is informational (§11, item 5).
 
 ### 8.4 Resolving and fetching an image (provider)
 
 For each blob the provider needs, it tries these sources in order, and stops at the first that yields bytes matching the digest:
 1. **Local cache.**
-2. **The spawn's `registry_entry`**, if present: that blob's `source`.
+2. **The spawn's `registry_entry`**, if present and if the entry lists that blob: its `source`. A blob the entry omits is not an error; the chain continues.
    - For `toon-store`, fetch the Blob Record by `blob_record_txid`, then its parts.
    - For `oci`, pull by digest from that registry.
 3. **Blob Records on its Relay Set:** those found by `#x = <hex>`.
@@ -574,4 +579,4 @@ A tenant selecting for CI matches `["t", "docker"]`, and gets a workload whose `
 
 ## Appendix B. Wire fixtures
 
-Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a signed Lease Request per `op` with its packet body (§6.1.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only. `fixtures/check.mjs` verifies the copy with no dependencies. Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image no source can serve. Milestone 3 adds the Warm Standby wire shapes: a Takeover event (§7.1), a Listing that prices standbys and the four paid routes it generates (§4.2, §5), and an availability request carrying `role` (§6.4); then the Standby Set roles themselves — one signed spawn answered `role: "primary"` with access at index 0 and `role: "standby"` with none at index 1, and a `status` for each, the standby's in the `reserved` state (§6.2, §6.5, §6.7); then paying a reservation — `.standby.extend` adding an interval, and the `not_standby` and `not_running` refusals (§6.3); then the Takeover settled both ways, driven through the provider's real watchdog over its fake Directory — the `status` of a standby that won, `running` with `access` and `takeover.winner`, and of one that lost, still `reserved` and naming the winner (§6.5, §7.1). The primary's self-stop arrives with the rest of Milestone 3.
+Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a signed Lease Request per `op` with its packet body (§6.1.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only. `fixtures/check.mjs` verifies the copy with no dependencies, and this repository's CI runs it on every push and pull request: it re-derives every `id`, re-signs every event from the published test keys and requires the same `sig`, rebuilds every packet body, and checks every error body against §5. Where the draft and the provider once disagreed, the fixtures' README says how each disagreement was settled; the spec text is now the normative side, and the only things the fixtures record that the spec does not fix are the ones the README lists as deliberately the provider's own (the HTTP status of a refusal, §5). Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image no source can serve. Milestone 3 adds the Warm Standby wire shapes: a Takeover event (§7.1), a Listing that prices standbys and the four paid routes it generates (§4.2, §5), and an availability request carrying `role` (§6.4); then the Standby Set roles themselves — one signed spawn answered `role: "primary"` with access at index 0 and `role: "standby"` with none at index 1, and a `status` for each, the standby's in the `reserved` state (§6.2, §6.5, §6.7); then paying a reservation — `.standby.extend` adding an interval, and the `not_standby` and `not_running` refusals (§6.3); then the Takeover settled both ways, driven through the provider's real watchdog over its fake Directory — the `status` of a standby that won, `running` with `access` and `takeover.winner`, and of one that lost, still `reserved` and naming the winner (§6.5, §7.1); and finally the primary's self-stop — the `status` of a primary that five Liveness cadences in a row failed to reach a majority of its own Relay Set, `stopped` with no `access` and everything else about the lease unchanged (§6.7, §7.1).
