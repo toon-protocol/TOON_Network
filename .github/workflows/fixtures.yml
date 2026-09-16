@@ -1,0 +1,28 @@
+# Checks the wire fixtures the way a tenant implementation would, with nothing
+# but Node's standard library (docs/spec/fixtures/check.mjs): every event id
+# and signature is re-derived from the published test keys, every packet body
+# is rebuilt, and every error body is checked against spec §5.
+#
+# The fixtures themselves are generated and verified byte-for-byte by the
+# provider's `cargo test` (toon-protocol/provider, tests/wire_fixtures.rs);
+# this workflow guards the copy that lives here.
+name: Wire fixtures
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check.mjs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node docs/spec/fixtures/check.mjs

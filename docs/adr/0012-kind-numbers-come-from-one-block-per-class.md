@@ -1,5 +1,7 @@
 # Kind numbers come from one contiguous block per NIP-01 class
 
+**Status:** Accepted, 2026-09-16. Answers [issue #13](https://github.com/toon-protocol/TOON_Network/issues/13); the allocation is in spec §3.1 and the reference provider's `src/nostr/kinds.rs` carries it.
+
 TOON Network allocates its event kinds from one contiguous block per NIP-01 class — `4432`–`4441` regular, `10432`–`10441` replaceable, `30432`–`30441` addressable — rather than picking a free number wherever one happens to sit. A relay filter or a tenant's directory read can then name a range instead of a list, the shared `432` suffix makes a stray kind obvious on sight, and every future TOON Network kind has an obvious home next to the ones already allocated. The blocks and the collision check behind them are in spec §3.1.
 
 The numbers themselves were already in the reference provider (`toon-provider`, `src/nostr/kinds.rs`) as placeholders. We ratified them rather than choosing fresh ones: they survived the collision check unchanged, and changing them would have invalidated the provider's tests and the wire fixtures for no gain.
