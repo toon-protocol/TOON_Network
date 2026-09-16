@@ -44,6 +44,14 @@ _Avoid_: Top-up, renewal
 A privilege beyond an ordinary workload, such as running Docker inside it, that a listing grants.
 _Avoid_: Runtime flag, permission, privilege
 
+**Docker Capability**:
+The capability that gives a workload a Docker daemon of its own, at the conventional socket path, scoped to its lease.
+_Avoid_: Docker-in-Docker, dind, privileged mode
+
+**Nesting Capability**:
+The capability that lets a workload create containers or virtual machines of its own, by a mechanism its own image brings.
+_Avoid_: Virtualization, inner container, privileged mode
+
 **Expiry**:
 The end of a lease because no payment bought another lease interval.
 _Avoid_: Timeout, lapse
