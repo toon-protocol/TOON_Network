@@ -183,6 +183,65 @@ for (const file of files) {
     report(hasTag(doc.event, ['L', constants.label]), `${file}: carries ["L", "${constants.label}"]`);
   }
 
+  // The Image Registry entry, the Blob Record and the Template (spec §8) are
+  // signed by a PUBLISHER, never by a provider, and each carries the same
+  // label. The two that are addressed by a digest must agree with it in both
+  // their `d` and their `x` tag, or a relay's `#x` filter could be made to
+  // serve a record describing a different blob.
+  if (surface === 'registry') {
+    report(doc.event.pubkey === constants.publisher.public_key, `${file}: signed by the fixture publisher, not the provider`);
+    report(hasTag(doc.event, ['L', constants.label]), `${file}: carries ["L", "${constants.label}"]`);
+    const d = tagValue(doc.event, 'd');
+    if (kase === 'image_entry') {
+      report(/^[^:]+:[^:]+$/.test(d), `${file}: d is <name>:<tag>`);
+      report(tagValue(doc.event, 'x') === doc.content.digest.replace(/^sha256:/, ''), `${file}: x tag is the image digest's hex`);
+      report(doc.content.blobs.length > 0, `${file}: lists the image's blobs`);
+      for (const [i, blob] of doc.content.blobs.entries()) {
+        const type = blob.source?.type;
+        report(type === 'toon-store' || type === 'oci', `${file}: blobs[${i}] has a source type this milestone defines`);
+      }
+    }
+    if (kase === 'blob_record') {
+      report(d === doc.content.digest, `${file}: d is the blob's digest`);
+      report(tagValue(doc.event, 'x') === doc.content.digest.replace(/^sha256:/, ''), `${file}: x tag is the blob digest's hex`);
+      const total = doc.content.parts.reduce((sum, p) => sum + p.size, 0);
+      report(total === doc.content.size, `${file}: the parts' sizes sum to the blob's size`);
+      report(
+        doc.content.parts.slice(0, -1).every((p) => p.size === doc.content.part_size),
+        `${file}: every part but the last is part_size bytes`,
+      );
+    }
+    if (kase === 'template') {
+      report(typeof d === 'string' && d.length > 0, `${file}: d is the template name`);
+      report(!('capabilities' in doc.content), `${file}: a Template grants no capability (ADR 0004)`);
+    }
+  }
+
+  // The three forms spec §6.2 allows a spawn's `image` to take. Exactly one
+  // of `reference` and `registry_entry` may be present, or neither.
+  if (surface === 'spawn_image') {
+    const image = doc.image;
+    report(/^sha256:[0-9a-f]{64}$/.test(image.digest), `${file}: image.digest is sha256:<64 lowercase hex>`);
+    report(
+      !('reference' in image) || !('registry_entry' in image),
+      `${file}: reference and registry_entry are never both present`,
+    );
+    if (image.registry_entry) {
+      const [kind, pubkey] = image.registry_entry.address.split(':');
+      report(Number(kind) === constants.kinds.K_IMAGE, `${file}: registry_entry.address names an Image Registry entry`);
+      report(pubkey === constants.publisher.public_key, `${file}: registry_entry.address names the fixture publisher`);
+      report(typeof image.registry_entry.relay === 'string' && image.registry_entry.relay.length > 0, `${file}: registry_entry names a relay`);
+    }
+    report(
+      JSON.stringify(doc.spawn_content.image) === JSON.stringify(image),
+      `${file}: image is the spawn content's own image object`,
+    );
+    report(
+      doc.request_body.request.content === JSON.stringify(doc.spawn_content),
+      `${file}: spawn_content is exactly the signed event's content`,
+    );
+  }
+
   if (doc.request_body && typeof doc.request_body === 'object' && doc.request_body.request) {
     checkEvent(`${file} request_body.request`, doc.request_body.request, {
       expectValidSig: kase !== 'bad_signature',
