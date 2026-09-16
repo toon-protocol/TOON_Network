@@ -9,7 +9,10 @@
 //            signed request body is exactly `{ "request": <event> }`, every
 //            event is the kind its `kind_name` says, every error body is
 //            `{ error, message }` with a spec §5 code, and the routes in
-//            `routes.listing` are the ones the Listing events derive to;
+//            `routes.listing` are the ones the Listing events derive to — the
+//            paid `.spawn` and `.extend` of every Listing, plus `.standby`
+//            and `.standby.extend` at `standby_price` for exactly the
+//            Listings that carry one;
 //   produce  from the test keys in `constants.json`, every event is rebuilt
 //            from its fields — a Lease Request from its PARSED `content` and
 //            its tags — and signed with all-zero auxiliary randomness, and
@@ -169,7 +172,7 @@ const canonical = (v) =>
 const ERROR_CODES = [
   'unknown_workload', 'wrong_listing_version', 'not_tenant', 'workload_id_taken',
   'refused_image', 'no_capacity', 'no_matching_arch', 'invalid_request',
-  'expired', 'not_standby', 'bad_signature', 'stale_request',
+  'expired', 'not_standby', 'not_running', 'bad_signature', 'stale_request',
 ];
 
 // ── the checks ──────────────────────────────────────────────────────────────
@@ -190,8 +193,11 @@ const constants = load('constants.json');
 
 // The test keys: every fixture event is signed by one of them, so every one
 // can be re-signed. Each public key must derive from its secret key first.
+// Every key `constants.json` publishes is taken, not a fixed list, so a key
+// added for a later surface — the Standby Set peers of §7, which sign nothing
+// here but could — is checked and can sign a round trip.
 const secretKeys = {};
-for (const who of ['tenant', 'provider', 'other_tenant', 'publisher']) {
+for (const who of Object.keys(constants).filter((k) => constants[k]?.secret_key).sort()) {
   const { secret_key, public_key } = constants[who];
   report(keypair(secret_key).pubkeyHex === public_key, `constants: ${who}.public_key derives from ${who}.secret_key`);
   secretKeys[public_key] = secret_key;
@@ -241,6 +247,7 @@ function roundTrip(where, event, { content, expectSameSig = true } = {}) {
 const hasTag = (event, cells) =>
   event.tags.some((t) => cells.every((c, i) => t[i] === c));
 const tagValue = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
+const tagValues = (event, name) => event.tags.filter((t) => t[0] === name).map((t) => t[1]);
 
 // The verifier must reject something, or every "ok" above is vacuous.
 {
@@ -295,6 +302,14 @@ for (const file of files) {
     report(doc.event.pubkey === constants.provider.public_key, `${file}: signed by the fixture provider`);
     roundTrip(`${file} event`, doc.event);
     report(hasTag(doc.event, ['L', constants.label]), `${file}: carries ["L", "${constants.label}"]`);
+    // A Takeover (spec §7.1) is addressed by the workload id the whole
+    // Standby Set shares, and names the primary it claims from. The signer
+    // is the STANDBY: a primary never announces its own takeover.
+    if (kase === 'takeover') {
+      report(tagValue(doc.event, 'd') === doc.content.workload_id, `${file}: d is the workload id`);
+      report(doc.content.primary === constants.primary_provider.public_key, `${file}: primary is the set's index 0`);
+      report(doc.event.pubkey !== doc.content.primary, `${file}: the standby signs it, not the primary`);
+    }
     if (kase === 'eviction') {
       report(['abuse', 'policy', 'maintenance', 'other'].includes(doc.content.reason), `${file}: reason is one of §6.7's codes`);
       report(tagValue(doc.event, 'x') === doc.content.workload_id, `${file}: x tag is the workload id`);
@@ -375,6 +390,39 @@ for (const file of files) {
     }
   }
 
+  // A Standby Set (spec §6.2 step 3, §7): ONE signed spawn reaches every
+  // member, so the request is identical at all of them and the ROLE comes
+  // from this provider's position in `standby_set` together with the route it
+  // arrived on. Index 0 is the primary, arrives on `.spawn` and runs the
+  // workload; any other index is a Warm Standby, arrives on `.standby` and
+  // runs nothing, which is why its answer carries no `access`.
+  if (surface === 'spawn' && (kase === 'primary' || kase === 'standby')) {
+    const content = JSON.parse(doc.request_body.request.content);
+    const set = content.standby_set ?? [];
+    const index = set.indexOf(constants.provider.public_key);
+    report(index >= 0, `${file}: the standby_set names the fixture provider`);
+    report(
+      JSON.stringify(tagValues(doc.request_body.request, 'p')) === JSON.stringify(set),
+      `${file}: one p tag per member, in the set's order`,
+    );
+    const onStandbyRoute = doc.http_path.endsWith('/standby');
+    report(
+      kase === 'primary' ? index === 0 && !onStandbyRoute : index > 0 && onStandbyRoute,
+      `${file}: index ${index} matches the ${onStandbyRoute ? '.standby' : '.spawn'} route`,
+    );
+    report(doc.response_body.role === kase, `${file}: the answer's role is ${kase}`);
+    report(
+      kase === 'standby'
+        ? doc.response_body.access === undefined
+        : doc.response_body.access !== undefined,
+      `${file}: a standby answers no access, a primary answers its own`,
+    );
+    report(
+      doc.response_body.workload_id === content.workload_id,
+      `${file}: the answer names the workload id the whole set shares`,
+    );
+  }
+
   if (surface === 'error') {
     const body = doc.response_body;
     report(
@@ -404,20 +452,28 @@ for (const file of files) {
     }
     const image = doc.request_body.image;
     report(image !== undefined && /^sha256:[0-9a-f]{64}$/.test(image.digest), `${file}: request carries the spawn's image object (ADR 0015)`);
+    const askKeys = canonical(Object.keys(doc.request_body).sort());
     report(
-      canonical(Object.keys(doc.request_body).sort()) === canonical(['image', 'listing', 'version']),
-      `${file}: request body is exactly { listing, version, image }`,
+      askKeys === canonical(['image', 'listing', 'version']) ||
+        askKeys === canonical(['image', 'listing', 'role', 'version']),
+      `${file}: request body is exactly { listing, version, image } plus §6.4's optional role`,
     );
+    if ('role' in doc.request_body) {
+      report(
+        ['primary', 'standby'].includes(doc.request_body.role),
+        `${file}: role is "primary" | "standby", the whole vocabulary §6.4 asks about`,
+      );
+    }
   }
 
   // A lease's state on the wire (§6.7): a string, or a one-key { ended } object.
   if (doc.response_body && doc.response_status === 200 && 'state' in doc.response_body) {
     const state = doc.response_body.state;
     const ok =
-      ['provisioning', 'running'].includes(state) ||
+      ['provisioning', 'reserved', 'running', 'stopped'].includes(state) ||
       (state !== null && typeof state === 'object' && canonical(Object.keys(state)) === canonical(['ended']) &&
         ['expiry', 'termination', 'eviction'].includes(state.ended));
-    report(ok, `${file}: state is "provisioning" | "running" | { "ended": <how> }`);
+    report(ok, `${file}: state is "provisioning" | "reserved" | "running" | "stopped" | { "ended": <how> }`);
   }
 }
 
@@ -425,7 +481,9 @@ for (const file of files) {
 // the Profile, and compare with the provider's own table.
 {
   const profile = load('directory.profile.json');
-  const routes = new Set(load('routes.listing.json').routes.map((r) => r.prefix));
+  const table = load('routes.listing.json').routes;
+  const routes = new Set(table.map((r) => r.prefix));
+  const priced = new Map(table.map((r) => [r.prefix, r]));
   const addr = profile.content.ilp_address;
   for (const file of files.filter((f) => f.startsWith('directory.listing'))) {
     const listing = load(file);
@@ -434,6 +492,20 @@ for (const file of files) {
     for (const op of ['spawn', 'extend']) {
       const prefix = `${addr}.${name}.v${version}.${op}`;
       report(routes.has(prefix), `${file}: derives to route ${prefix}`);
+    }
+    // The standby routes exist for exactly the listings that price them
+    // (§4.2, §5): `standby_price` present means both rows at that price,
+    // absent means neither — a connector must never terminate a route the
+    // provider did not price, and it must never sell held capacity free.
+    const standbyPrice = listing.content.standby_price;
+    for (const op of ['standby', 'standby.extend']) {
+      const prefix = `${addr}.${name}.v${version}.${op}`;
+      const row = priced.get(prefix);
+      if (standbyPrice === undefined) {
+        report(row === undefined, `${file}: prices no standby, so there is no route ${prefix}`);
+      } else {
+        report(row?.price === standbyPrice, `${file}: derives to route ${prefix} at standby_price ${standbyPrice}`);
+      }
     }
     report(
       tagValue(listing.event, 'a') === `${constants.kinds.K_PROFILE}:${profile.event.pubkey}:`,
