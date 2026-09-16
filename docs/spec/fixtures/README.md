@@ -58,7 +58,7 @@ Each file is named `<surface>.<case>.json` and carries a `fixture` header (`surf
 | `extend.ok.json` | `<addr>.basic.v1.extend` | Unsigned `{ "workload_id" }`; `expires_at` grows by one interval |
 | `status.running.json` | `<addr>.status` | `state: "running"`, `access` present |
 | `status.ended.json` | `<addr>.status` | After termination: `state: { "ended": "termination" }`, no `access` |
-| `status.reserved.json` | — | **Shape only** — a Warm Standby before Takeover: `state: "reserved"`, `role: "standby"`, no `access`. See Milestone 3 below |
+| `status.reserved.json` | — | **Shape only** — a Warm Standby before Takeover: `state: "reserved"`, `role: "standby"`, no `access`. See *Warm Standby* below |
 | `terminate.ok.json` | `<addr>.terminate` | `{ "workload_id", "state": { "ended": "termination" } }` |
 
 **The three forms of a spawn's `image`** (spec §6.2). Each carries `image` (the object on its own), `spawn_content` (the whole parsed content), and the request and response of one spawn on `<addr>.basic.v1.spawn`.
@@ -94,7 +94,7 @@ A fourth shape — `reference` together with `registry_entry`, a `digest` that i
 | 9 | `error.unknown_workload.json` | 404 | Status for a `workload_id` this provider never leased | §6.3/§6.5/§6.6 |
 | 10 | `error.not_tenant.json` | 403 | Status signed by the other tenant | §6.5 |
 | 11 | `error.expired.json` | 409 | Extension of a terminated lease (`expired` covers every ending, §6.3) | §6.3 |
-| 12 | `error.not_standby.json` | 409 | **Shape only** — see Milestone 3 below | §6.3 |
+| 12 | `error.not_standby.json` | 409 | **Shape only** — see *Warm Standby* below | §6.3 |
 
 The error table above is the whole of §5's codes. The refusal a Warm Standby surface answers today is not one of them: it is `invalid_request`, and the next section says why.
 
