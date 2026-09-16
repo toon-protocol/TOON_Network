@@ -391,7 +391,7 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 
 A standby watches the primary's Liveness on the **primary's** Relay Set, read from the primary's Provider Profile.
 
-1. **Trigger:** the primary's Liveness is expired or absent on a strict majority of that Relay Set, continuously for `liveness_cadence_s` seconds.
+1. **Trigger:** the primary's Liveness is expired or absent on a strict majority of that Relay Set (one of one, two of three), continuously for `liveness_cadence_s` seconds. A relay the standby cannot read holds no Liveness it can see, and counts as absent. A majority that is live again inside the cadence, even once, restarts the count.
 2. **Announce:** the standby publishes a Takeover event to the primary's Relay Set.
    - Kind `30433` (addressable), `d = <workload_id>`. Addressable, so a standby leaves one claim per workload rather than a history, and step 3 reads a set of claimants.
    - Content: `{ "workload_id": "…", "primary": "<pubkey>" }`, where `primary` is the hex pubkey at `standby_set[0]`.
@@ -508,7 +508,7 @@ A provider MAY set `hidden: true` only if all of these hold (ADR 0008):
 
 1. **Label vocabulary:** §4.4 fixes `isolation`, `arch`, and the `docker` and `nesting` capabilities. Still open: `gpu:<model>` naming, and how a capability beyond the `x-` prefix gets added.
 2. **Large Blob Records:** a record over one store data item (~700 parts at 100 KiB) needs paging or a larger `part_size`.
-3. **Timing constants:** the 300 s request window, the 30 s sweep, and the takeover settle window are first guesses.
+3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger and the two-cadence settle window are first guesses.
 4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
 5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
 6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. The gateway itself is unspecified. Its first open question is authority: `.status` (§6.5) needs the tenant's signature, so a gateway cannot re-resolve a workload after a Takeover without a delegation v1 does not define (ADR 0005). Also unspecified: which of a spawn's `ports` is the HTTP one. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
