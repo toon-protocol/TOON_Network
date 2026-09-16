@@ -146,6 +146,7 @@ function checkEvent(where, event, { expectValidSig = true, kindName } = {}) {
 const hasTag = (event, cells) =>
   event.tags.some((t) => cells.every((c, i) => t[i] === c));
 const tagValue = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
+const tagValues = (event, name) => event.tags.filter((t) => t[0] === name).map((t) => t[1]);
 
 // The verifier must reject something, or every "ok" above is vacuous.
 {
@@ -258,6 +259,39 @@ for (const file of files) {
       kindName: 'K_LEASE_REQUEST',
     });
     report(Object.keys(doc.request_body).length === 1, `${file}: the body has no key besides request`);
+  }
+
+  // A Standby Set (spec §6.2 step 3, §7): ONE signed spawn reaches every
+  // member, so the request is identical at all of them and the ROLE comes
+  // from this provider's position in `standby_set` together with the route it
+  // arrived on. Index 0 is the primary, arrives on `.spawn` and runs the
+  // workload; any other index is a Warm Standby, arrives on `.standby` and
+  // runs nothing, which is why its answer carries no `access`.
+  if (surface === 'spawn' && (kase === 'primary' || kase === 'standby')) {
+    const content = JSON.parse(doc.request_body.request.content);
+    const set = content.standby_set ?? [];
+    const index = set.indexOf(constants.provider.public_key);
+    report(index >= 0, `${file}: the standby_set names the fixture provider`);
+    report(
+      JSON.stringify(tagValues(doc.request_body.request, 'p')) === JSON.stringify(set),
+      `${file}: one p tag per member, in the set's order`,
+    );
+    const onStandbyRoute = doc.http_path.endsWith('/standby');
+    report(
+      kase === 'primary' ? index === 0 && !onStandbyRoute : index > 0 && onStandbyRoute,
+      `${file}: index ${index} matches the ${onStandbyRoute ? '.standby' : '.spawn'} route`,
+    );
+    report(doc.response_body.role === kase, `${file}: the answer's role is ${kase}`);
+    report(
+      kase === 'standby'
+        ? doc.response_body.access === undefined
+        : doc.response_body.access !== undefined,
+      `${file}: a standby answers no access, a primary answers its own`,
+    );
+    report(
+      doc.response_body.workload_id === content.workload_id,
+      `${file}: the answer names the workload id the whole set shares`,
+    );
   }
 
   if (surface === 'error') {
