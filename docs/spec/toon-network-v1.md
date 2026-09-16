@@ -274,7 +274,7 @@ This is a tenant-signed event carried in request bodies. The provider validates 
 | Field | Type | Meaning |
 |---|---|---|
 | `workload_id` | hex, 32 bytes | Chosen at random by the tenant; shared by a Standby Set |
-| `image` | object | `{ "digest": "sha256:…", "registry_entry"?: { "address": "30434:<pubkey>:<d>", "relay": "<url>" } }`. The digest names an index or a manifest. |
+| `image` | object | One of the three forms below. The digest names an index or a manifest. |
 | `env` | object | Environment variables |
 | `ports` | object[] | `{ "container_port", "protocol": "tcp" \| "udp" }` |
 | `volume_gb` | int? | Persistent volume, ≤ `resources.storage_gb` |
@@ -283,7 +283,19 @@ This is a tenant-signed event carried in request bodies. The provider validates 
 | `standby_set` | string[]? | Provider pubkeys, primary first (§7) |
 | `template` | string? | Informational `30436:<pubkey>:<d>` the values came from |
 
-**The provider MUST NOT accept** runtime flags, host mounts, device mappings or capabilities in a spawn. Capabilities come only from the listing (ADR 0004).
+**The `image` object** takes exactly one of three forms:
+
+| Form | Fields | Where the bytes come from |
+|---|---|---|
+| Upstream | `{ "reference": "<oci repository>", "digest": "sha256:…" }` | Pulled as `reference@digest` from the registry the reference names. No Image Registry lookup at all. |
+| Registry entry | `{ "digest": "sha256:…", "registry_entry": { "address": "30434:<pubkey>:<d>", "relay": "<url>" } }` | The entry at `address` lists every blob and the source of each (§8.1). `relay` is a hint for finding the entry, not an authority: the entry is addressed by its signer. |
+| Digest alone | `{ "digest": "sha256:…" }` | Blob Records found by `#x` on the provider's Relay Set (§8.4 step 3). |
+
+`reference` is an OCI repository (`[registry[:port]/]repo[/path…]`) with no tag and no `@digest`. `digest` is `sha256:` followed by exactly 64 lowercase hex characters. `reference` and `registry_entry` MUST NOT both be present; any other shape is `invalid_request`.
+
+Because an Image Registry entry's `d` is itself `<name>:<tag>` (§8.1), the coordinate in `registry_entry.address` has four colon-separated fields — `30434:<pubkey>:<name>:<tag>` — and a reader MUST split it into at most three parts, so the `d` keeps its own colon.
+
+**The provider MUST NOT accept** runtime flags, host mounts, device mappings or capabilities in a spawn. Capabilities come only from the listing (ADR 0004). `template` is informational: the provider parses it so it cannot arrive as an unknown field, and never acts on it.
 
 **Validation**, in order, refusing with the first failing code:
 1. The signature is valid, `p` is this provider, and the request is not expired or replayed.
@@ -382,6 +394,8 @@ A standby watches the primary's Liveness on the **primary's** Relay Set, read fr
 
 ## 8. Image Registry and image bytes
 
+The three events in this section are signed by a **publisher**, never by a provider: a provider only reads them. Like every other TOON Network event they carry `["L","toon.network"]` (§4), so one relay filter finds them whatever their kind.
+
 ### 8.1 Image Registry entry: kind `30434` (addressable)
 
 Signed by the publisher, with `d = "<name>:<tag>"`. The canonical name is `<publisher npub>/<name>:<tag>`.
@@ -402,7 +416,8 @@ Content is JSON:
 ```
 
 - **Blob list:** `blobs` MUST list every blob reachable from `digest`: the index, the manifests, the configs and the layers.
-- **Tag:** `["x", "<digest hex>"]`.
+- **Tag:** `["x", "<digest hex>"]` — the hex ALONE, with no `sha256:` prefix, so an `#x` filter is over the same string whatever wrote it.
+- **Source:** `type` is `"toon-store"` or `"oci"` and nothing else in v1; a reader MUST refuse a source type it does not know rather than skip the blob.
 - **Moving a tag:** re-publishing the same `d` points the tag at a new image.
 
 ### 8.2 Blob Record: kind `30435` (addressable)
@@ -416,15 +431,17 @@ Content is JSON:
   "parts": [ { "txid": "…", "sha256": "…", "size": 102400 } ] }
 ```
 
-- **Tag:** `["x", "<hex>"]`.
-- **Parts:** each is stored as one TOON store upload (`kind:5094`).
+- **Tag:** `["x", "<hex>"]` — as in §8.1, the hex with no `sha256:` prefix. `d` keeps the prefix; the tag does not.
+- **Parts:** each is stored as one TOON store upload (`kind:5094`), and `parts` is ORDERED: a reader concatenates them as they appear and checks the result against `digest`. A part's `sha256` is bare hex, with no `sha256:` prefix — a part is not content-addressed the way a blob is.
+- **`part_size`:** the size every part but the last has. The last part is the remainder, so the parts' sizes MUST sum to `size`.
 - **Where it lives:** the Blob Record is published to relays, and the same signed event JSON is also uploaded once to the TOON store. That upload's transaction id is the `blob_record_txid` used in Image Registry entries (ADR 0006).
 
 ### 8.3 Template: kind `30436` (addressable)
 
 Signed by the publisher, with `d = <template name>`.
 
-- **Content:** `{ "version": n, "image": { "digest", "registry_entry"? }, "ports", "data_path"?, "env_fixed": {…}, "env_tenant": ["NAME", …], "min_resources"?: {…} }`
+- **Content:** `{ "version": n, "image": { "digest", "registry_entry"? }, "ports": [ { "container_port", "protocol" } ], "data_path"?, "env_fixed": {…}, "env_tenant": ["NAME", …], "min_resources"?: { "cpu_millicores", "memory_mb", "storage_gb", "gpu"? } }`
+- **Shapes it borrows:** `image` is §6.2's registry-entry or digest-alone form (never the upstream one — a Template names an image by content address); `ports` is a spawn's `ports` (§6.2); `min_resources` is a Listing's `resources` (§4.2), read as a floor for choosing a Listing rather than as a rule on any provider.
 - **No capabilities:** a Template grants nothing (ADR 0004).
 - **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Network and belong to rig, outside the `toon.network` label (ADR 0014, proposed).
 - **Who expands it:** in v1 the **tenant** expands a Template into a spawn. The provider never reads Templates, and `template` in a spawn is informational (§11, item 5).
@@ -445,6 +462,8 @@ A fetch MUST:
 - check the whole blob's digest.
 
 A blob that fails verification is discarded, and the next source is tried. A blob that no source can serve fails the spawn with `refused_image`, or `no_capacity` if the disk is full. Verified blobs SHOULD be cached across leases.
+
+A provider that does not implement this resolution at all answers `refused_image` for both Image Registry forms of §6.2's `image`, with a message saying so — never `invalid_request`, which would send a tenant to fix a request that is already correct. It MUST answer that refusal before it counts capacity and before it creates anything, so `availability` (§6.4) reports it for free.
 
 ---
 
@@ -533,4 +552,4 @@ A tenant selecting for CI matches `["t", "docker"]`, and gets a workload whose `
 
 ## Appendix B. Wire fixtures
 
-Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a signed Lease Request per `op` with its packet body (§6.1.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only. `fixtures/check.mjs` verifies the copy with no dependencies. Warm Standby surfaces (§7) have no fixtures until Milestone 3; the README says which.
+Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a signed Lease Request per `op` with its packet body (§6.1.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only. `fixtures/check.mjs` verifies the copy with no dependencies. Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image the provider cannot yet resolve. Warm Standby surfaces (§7) have no fixtures until Milestone 3; the README says which.
