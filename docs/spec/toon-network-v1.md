@@ -394,7 +394,7 @@ A standby watches the primary's Liveness on the **primary's** Relay Set, read fr
 
 ## 8. Image Registry and image bytes
 
-The three events in this section are signed by a **publisher**, never by a provider: a provider only reads them. Like every other TOON Network event they carry `["L", "toon.network"]` (§4.4), so one relay filter finds them whatever their kind.
+The three events in this section are signed by a **publisher**, never by a provider: a provider only reads them. Like every other TOON Network event they carry `["L","toon.network"]` (§4), so one relay filter finds them whatever their kind.
 
 ### 8.1 Image Registry entry: kind `30434` (addressable)
 
