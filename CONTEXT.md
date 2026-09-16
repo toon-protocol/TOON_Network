@@ -84,6 +84,10 @@ _Avoid_: Failover, promotion
 A provider whose network location is not revealed to tenants or observers by anything it publishes or serves.
 _Avoid_: Anonymous provider, onion provider
 
+**Workload Gateway**:
+A TOON app that fronts a workload at a stable hostname, resolving its workload id to whichever provider is currently running it.
+_Avoid_: Gateway (unqualified: the TOON store's gateway is a different thing), ingress, load balancer, reverse proxy
+
 ### Directory
 
 **Provider Directory**:
@@ -119,3 +123,9 @@ _Avoid_: Manifest, bill of lading, part list
 **Template**:
 A signed, published description of a spawn: an image by content address, its ports, its fixed settings and the settings a tenant may set. It grants no capability.
 _Avoid_: Preset, app
+
+### Tenant records
+
+**Deployment**:
+A tenant's signed statement that one environment of one repository is currently served by a lease. Only a tenant signs one, and a provider neither publishes nor reads it.
+_Avoid_: Release, rollout, environment record
