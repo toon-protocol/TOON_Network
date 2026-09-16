@@ -257,7 +257,7 @@ Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workloa
 This is a tenant-signed event carried in request bodies. The provider validates it and MUST NOT publish it.
 
 - **Tags:**
-  - `["p", "<provider pubkey>"]`: the provider MUST refuse if it isn't its own key.
+  - `["p", "<provider pubkey>"]`: the provider MUST refuse unless one of the `p` tags is its own key. A spawn that forms a Standby Set carries **one `p` tag per member** (§7), because the tenant signs that spawn once and sends the same bytes to every member; every other request carries exactly one `p` tag, and a provider MUST refuse a `status` or a `terminate` that names a second provider. Which `p` tags a spawn may carry is §6.2 step 3, where the `standby_set` is known.
   - `["op", "spawn" | "status" | "terminate"]`
   - `["expiration", t]`: the provider MUST refuse if `now > t`, and SHOULD refuse if `t - created_at` exceeds 300 s (`stale_request`).
 - **Replay:** the provider MUST keep the ids of Lease Requests it has accepted until their expiration, and refuse repeats.
@@ -267,7 +267,7 @@ This is a tenant-signed event carried in request bodies. The provider validates 
 - **A NIP-01 event, nothing more.** A Lease Request is an ordinary Nostr event of kind `K_LEASE_REQUEST` signed by the tenant's Nostr key. Its `id` is the SHA-256 of the NIP-01 serialization `[0, <pubkey>, <created_at>, <kind>, <tags>, <content>]` (UTF-8, no whitespace, NIP-01 escaping), and `sig` is a BIP-340 Schnorr signature over that `id` by `pubkey`. Nothing TOON-specific is hashed or signed, so any NIP-01 library produces and verifies a Lease Request.
 - **Content.** `content` is the op's JSON object (§6.2, §6.5, §6.6) serialised to a string. A field the spec does not name, anywhere in it, MUST be refused as `invalid_request`, never dropped (ADR 0004).
 - **Packet body.** The request body of a signed route is the JSON object `{ "request": <event> }`: the signed event as a JSON object, unmodified, as the value of the single key `request`. It is not re-encoded, base64'd or wrapped further, and a body with any other key MUST be refused as `invalid_request`. This body is the HTTP body inside the connector's sealed envelope: the tenant seals the whole HTTP request to the provider's pinned `connector_seal_key` (§3, ADR 0011; connector ADR 0018), the connector unseals it and forwards plain HTTP, and the provider app reads the body as plaintext JSON and no payment header (§2).
-- **Verification order.** The provider verifies `id` and `sig` first (`bad_signature`), then the kind, the `p` tag and the `op` tag (`invalid_request`), then `expiration` and the window (`stale_request`), then replay (`stale_request`). This is the whole of §6.2 step 1, and every signed route runs it identically.
+- **Verification order.** The provider verifies `id` and `sig` first (`bad_signature`), then the kind, the `p` tags and the `op` tag (`invalid_request`), then `expiration` and the window (`stale_request`), then replay (`stale_request`). This is the whole of §6.2 step 1, and every signed route runs it identically.
 - **Fixtures.** Signed Lease Requests per `op`, with their packet bodies, are in Appendix B.
 
 ### 6.2 Spawn
@@ -301,11 +301,13 @@ Because an Image Registry entry's `d` is itself `<name>:<tag>` (§8.1), the coor
 **The provider MUST NOT accept** runtime flags, host mounts, device mappings or capabilities in a spawn. Capabilities come only from the listing (ADR 0004). `template` is informational: the provider parses it so it cannot arrive as an unknown field, and never acts on it.
 
 **Validation**, in order, refusing with the first failing code:
-1. The signature is valid, `p` is this provider, and the request is not expired or replayed.
-2. The route's listing version exists, and `volume_gb` and the ports fit the listing.
+1. The signature is valid, a `p` tag names this provider, and the request is not expired or replayed.
+2. The route's listing version exists, and `volume_gb` and the ports fit the listing. On `.standby` the listing MUST also price standbys: a listing with no `standby_price` sells none and has no `.standby` route at all (§4.2, §5), so a spawn that arrives on one is refused `wrong_listing_version` — the route is not on sale here, exactly as a retired version's is not.
 3. **Role:**
-   - With no `standby_set`, the route MUST be `.spawn`.
-   - With a `standby_set`, this provider MUST be in the set. Index 0 MUST arrive on `.spawn`, and any other index on `.standby`.
+   - With no `standby_set`, the route MUST be `.spawn`, and the request MUST name no provider but this one.
+   - With a `standby_set`, this provider MUST be in the set, and every `p` tag MUST name a member of it. Index 0 MUST arrive on `.spawn`, and any other index on `.standby`.
+   - A `standby_set` MUST list each member once, as a public key; a list that repeats a provider gives it two positions and so two roles.
+   - Every failure of this step is `invalid_request`: the spawn is mis-addressed and the tenant must correct it, not retry it. It is still billed (ADR 0003).
 4. `workload_id` is not held by this provider for a different tenant (`workload_id_taken`).
 5. **Image:** resolve it (§8.4). With an index, pick the manifest for the listing's `arch` (`no_matching_arch`). Apply the provider's image policy (`refused_image`).
 6. Capacity is available (`no_capacity`).
@@ -345,6 +347,8 @@ It responds with `{ "workload_id", "expires_at" }`.
 
 It applies §6.2 steps 2, 5 and 6 without starting anything. A positive answer is advice, not a reservation: a spawn that later fails is still billed (ADR 0003).
 
+With `role: "standby"` it answers whether a Warm Standby **would be reserved** here, and reserves nothing: the listing must price standbys — one that does not is refused `wrong_listing_version`, the same answer its `.standby` route would have given — and capacity is counted with reservations subtracted, exactly as for a running lease (§6.7). Omitting `role`, or `role: "primary"`, asks the ordinary question.
+
 ### 6.5 Status (free)
 
 **Request body:** `{ "request": <kind 4432 event, op=status> }`. Content: `{ "workload_id": "…" }`.
@@ -377,6 +381,8 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 ## 7. Warm Standby
 
 - **Standby Set:** every lease in a Standby Set is spawned with the same `workload_id` and the same `standby_set` list. Index 0 is the primary. A provider's role comes from its position in the list.
+- **One signed spawn:** the tenant signs that spawn **once**, names every member in its `p` tags (§6.1), and sends the same bytes to each. Nothing in the request singles out a member, so a provider's role is its position together with the route the request was paid on (§6.2 step 3): the primary's spawn is bought on `.spawn` at `price`, each standby's on `.standby` at `standby_price`.
+- **A reservation is a lease:** a Warm Standby's lease is `Reserved` from the spawn (§6.7). It holds its `workload_id` and its capacity slot, is persisted across the provider's restarts, expires on the sweep if nothing pays it, and is released by a Termination — all without the provider ever starting anything.
 - **Membership changes:** changing membership means new spawns under a new `workload_id`.
 
 ### 7.1 Takeover (ADR 0010)
@@ -558,4 +564,4 @@ A tenant selecting for CI matches `["t", "docker"]`, and gets a workload whose `
 
 ## Appendix B. Wire fixtures
 
-Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a signed Lease Request per `op` with its packet body (§6.1.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only. `fixtures/check.mjs` verifies the copy with no dependencies. Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image no source can serve. Milestone 3 adds the Warm Standby wire shapes: a Takeover event (§7.1), a Listing that prices standbys and the four paid routes it generates (§4.2, §5), a `status` answer in the `reserved` state (§6.7) and an availability request carrying `role` (§6.4). The surfaces that reserve, pay and take over a standby arrive with the rest of Milestone 3; the README says which fixtures are shapes only.
+Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a signed Lease Request per `op` with its packet body (§6.1.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only. `fixtures/check.mjs` verifies the copy with no dependencies. Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image no source can serve. Milestone 3 adds the Warm Standby wire shapes: a Takeover event (§7.1), a Listing that prices standbys and the four paid routes it generates (§4.2, §5), and an availability request carrying `role` (§6.4); then the Standby Set roles themselves — one signed spawn answered `role: "primary"` with access at index 0 and `role: "standby"` with none at index 1, and a `status` for each, the standby's in the `reserved` state (§6.2, §6.5, §6.7). The surfaces that pay and take over a standby arrive with the rest of Milestone 3; the README says which fixture is still a shape only.
