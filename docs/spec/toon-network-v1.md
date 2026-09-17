@@ -589,7 +589,7 @@ A lease's address is created before its workload starts and answers on the same 
 3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger, the two-cadence settle window (measured from each standby's own announcement, so two standbys that saw the silence at different instants settle at different instants) and the five-cadence primary self-stop are first guesses.
 4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
 5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
-6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. Its first open question — authority — is now **closed**: the Gateway Grant (§3.1.3) is the delegation, `status` honours one (§6.5), and the grant's `http_port` says which of a spawn's `ports` is the HTTP one, so nothing is told to a Workload Gateway out of band. The gateway itself is now specified in **§12**, which opens with what a gateway is, how it finds its grants and the hostname it derives from a workload id, and says what its error page tells a tenant. §12 now also says how a gateway resolves a workload across its Standby Set (§12.4), what a forwarded request carries (§12.5) and how a readable `name` is served (§12.6). What it still has to say is listed in §12.7: how a gateway follows a Takeover, and what fronting a Hidden Provider's workload discloses. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
+6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. Its first open question — authority — is now **closed**: the Gateway Grant (§3.1.3) is the delegation, `status` honours one (§6.5), and the grant's `http_port` says which of a spawn's `ports` is the HTTP one, so nothing is told to a Workload Gateway out of band. The gateway itself is now specified in **§12**, which opens with what a gateway is, how it finds its grants and the hostname it derives from a workload id, and says what its error page tells a tenant. §12 now also says how a gateway resolves a workload across its Standby Set (§12.4), what a forwarded request carries (§12.5), how a readable `name` is served (§12.6) and how a gateway follows the workload through a Takeover, a cadence and a grant that ran out or named somebody else (§12.7). What it still has to say is listed in §12.8: what fronting a Hidden Provider's workload discloses. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
 
 ---
 
@@ -620,7 +620,7 @@ Whether a grant is **this** gateway's is a separate question from whether it is 
 A grant is addressable on the workload id, so there is at most **one** grant per workload and a later one **replaces** the one held — the later `created_at`, and on a tie the lower `id`, exactly as a relay replaces a replaceable event. A gateway MUST apply that rule to the newest grant it has **seen** for a workload rather than to the one it is serving: several relays carry the same grant, so an earlier grant arriving again after a later one is ordinary and MUST change nothing. Renewal, rotation and a change of Standby Set are therefore the same act as publishing, and all take effect with no restart and no operator action:
 
 - a later grant with a further `expires_at` renews;
-- a later grant naming a **different** gateway withdraws the workload from this one, which MUST stop serving it. Such a grant names the other gateway in its `p` tag, so the filter above does not carry it; how a gateway comes to see one is part of following the workload (§12.7);
+- a later grant naming a **different** gateway withdraws the workload from this one, which MUST stop serving it. Such a grant names the other gateway in its `p` tag, so the filter above does not carry it; how a gateway comes to see one, and which signer may replace a grant, is §12.7;
 - a grant that reaches its `expires_at` stops being served (§12.3), and starts again by itself if its tenant republishes.
 
 A gateway serves only grants it found this way. A grant handed to it by a request — anyone can send one — MUST NOT put a workload on a hostname, because publishing is what a tenant does to choose a gateway and being sent something is not.
@@ -708,9 +708,39 @@ An expired grant keeps its name until another grant claims it — so a tenant wh
 
 Because a name is a convenience and the canonical hostname is not, a gateway MAY refuse names by its own policy, and two gateways holding the same grants MAY disagree about who has which name. Nothing in this protocol depends on a readable name.
 
-### 12.7 What this section still has to say
+### 12.7 Following the workload
 
-Two things belong in §12 and are not written yet: **following the workload** — the Takeover a gateway watches for, the settle window before it re-resolves, how often it re-asks, and how it sees a grant that rotated a workload away from it; and **hidden workloads** — reaching a Hidden Provider's lease through an anon client, and what fronting one discloses (§10).
+§12.4 finds where a workload is running once. This is what keeps that answer true, because nothing tells a gateway that it stopped being true: a Takeover moves the workload with no tenant online (§7.1, ADR 0010), a primary's self-stop, an expiry and an eviction (§6.7) announce nothing to a gateway at all, and a tenant's own rotation names somebody else. A gateway follows the **workload**, not the provider it first found it on.
+
+**The Takeover watch.** For each workload it holds a grant for, a gateway watches
+
+```json
+{ "kinds": [30433], "#d": ["<workload_id>"] }
+```
+
+on the **primary's Relay Set** — the `relays` of the Provider Profile of `standby_set[0]` — because that is where §7.1 has a standby publish its claim, and it need not be a relay the gateway is configured with. A gateway whose primary names no Relay Set has nowhere else to look and MAY watch its own relays instead. A relay is trusted for nothing here either: the event's `id` and `sig` MUST verify, and a claim signed by a key the grant's `standby_set` does not name MUST be ignored, exactly as §7.1 ignores it — otherwise anyone could publish one and hold up a gateway's re-asks.
+
+**The settle window.** A Takeover event does not mean the workload has moved. It means a standby announced that it intends to take it, and §7.1 gives that standby **2 × `liveness_cadence_s`** — the **primary's** cadence, as the primary's Profile states it — from its **own announcement** before it starts anything. So a gateway MUST NOT re-resolve before `created_at + 2 × liveness_cadence_s` of the claim it saw, counted from the event's `created_at` and **not** from when the gateway happened to receive it: a relay that was slow, or a gateway that was restarted, does not move the deadline. Re-resolving earlier costs a round of `status` to every member and can only learn that nothing is running — the primary has stopped and the standby has not started — which is exactly the moment the last known target must keep serving.
+
+**The per-cadence re-ask.** Independently of any event, a gateway MUST re-ask at least once every `liveness_cadence_s` while it holds a target, so that a self-stop, an expiry or an eviction stops being forwarded to within a cadence rather than lingering until someone notices. While a settle window is running this re-ask waits for it, for the reason above. A gateway that holds no target for a workload need not poll for one: a request resolves it (§12.4).
+
+**The last known target keeps serving.** While a re-resolution is in flight, requests continue to be forwarded to the member last seen running. Only a **finished** resolution changes the target or withdraws it. A slow relay, a slow connector or a member that will not answer therefore never takes a healthy workload offline; what they cost is the freshness of the answer, not the service. A resolution that finished and found nobody running does withdraw it, and the tenant is told which of §12.3's two reasons it was.
+
+**A grant that ran out.** When `now > expires_at`, the workload stops being served and is answered `grant_expired` (§12.3). A gateway MUST NOT carry an expired grant to a provider, which would refuse it `bad_grant` (§6.5) and rightly. No timer, restart or operator action is involved on either side: expiry is a comparison made when a request arrives, and a tenant that republishes the grant under the same workload id is served again by the same act (§12.1).
+
+**A grant that named somebody else.** A grant rotating a workload away names the **other** gateway in its `p` tag, so §12.1's `#p` filter cannot carry it. A gateway that wants a tenant's rotation to take effect without its operator's help MUST therefore watch a second filter, on the workload ids it holds:
+
+```json
+{ "kinds": [30438], "#d": ["<workload_id>", "…"] }
+```
+
+on the relays it is configured with, which is where the grant that brought the workload here was published. Because that filter carries events from **anyone**, the replacement rule of §12.1 is not enough on its own: a gateway MUST NOT let a grant signed by a key other than the **tenant of the grant it holds** replace that grant, whatever its `created_at`. A grant's whole authority is its signer — a provider honours one exactly when the lease's tenant signed it (§6.5) — so an event with the same `d` from another key is not a later grant for that workload, and treating it as one would let a stranger take any workload off any gateway. A grant that IS the tenant's and names another gateway withdraws the workload at once: the gateway stops forwarding it, stops watching it and gives up its name (§12.6).
+
+**What a tenant sees.** Two timings follow from this section, and a tenant should be told them rather than left to measure them. After a Takeover, a URL moves roughly one settle window after the claim was published — `2 × liveness_cadence_s` from its `created_at`, plus whatever a gateway's own polling granularity adds — and it keeps answering from the old member throughout, until the member running it can be found. After a self-stop, an expiry or an eviction, a URL stops being served within one `liveness_cadence_s`. Neither depends on the tenant being online.
+
+### 12.8 What this section still has to say
+
+One thing belongs in §12 and is not written yet: **hidden workloads** — reaching a Hidden Provider's lease through an anon client, and what fronting one discloses (§10).
 
 ---
 
