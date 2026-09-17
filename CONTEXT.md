@@ -137,3 +137,7 @@ _Avoid_: Preset, app
 **Deployment**:
 A tenant's signed statement that one environment of one repository is currently served by a lease. Only a tenant signs one, and a provider neither publishes nor reads it.
 _Avoid_: Release, rollout, environment record
+
+**Gateway Grant**:
+A tenant's signed, published delegation that lets one Workload Gateway read a workload's lease state and access details until the grant expires.
+_Avoid_: Token, API key, delegation certificate
