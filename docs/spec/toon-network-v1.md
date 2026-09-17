@@ -559,7 +559,7 @@ A provider that does not implement this resolution at all answers `refused_image
 
 - **v1 workloads are OCI containers** (ADR 0001 scope; Paygress Docker backend).
 - **Access:** SSH uses only the tenant's `ssh_public_key`. Ports are exposed as `host:host_port`.
-- **Hostnames and TLS:** outside the provider protocol. A provider never owns a domain, runs ACME or terminates TLS, and never holds a tenant's certificate key. A stable HTTPS name for a workload is the job of a **Workload Gateway**, a separate TOON app keyed by `workload_id` (ADR 0013, *Proposed*; §11, item 6). Until one exists, a tenant that wants HTTPS terminates it inside its own workload.
+- **Hostnames and TLS:** outside the provider protocol. A provider never owns a domain, runs ACME or terminates TLS, and never holds a tenant's certificate key. A stable HTTPS name for a workload is the job of a **Workload Gateway**, a separate TOON app keyed by `workload_id` (§12; ADR 0013, *Proposed*). Until one exists, a tenant that wants HTTPS terminates it inside its own workload.
 - **Capabilities:** Docker-in-workload, nesting and similar are enabled only when the listing grants them, and mean what §4.4 says they mean.
 - **Refusals:** the provider MAY refuse any image by its own policy. It SHOULD answer that refusal on `availability` first.
 
@@ -589,7 +589,77 @@ A lease's address is created before its workload starts and answers on the same 
 3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger, the two-cadence settle window (measured from each standby's own announcement, so two standbys that saw the silence at different instants settle at different instants) and the five-cadence primary self-stop are first guesses.
 4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
 5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
-6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. Its first open question — authority — is now **closed**: the Gateway Grant (§3.1.3) is the delegation, `status` honours one (§6.5), and the grant's `http_port` says which of a spawn's `ports` is the HTTP one, so nothing is told to a Workload Gateway out of band. The gateway itself is still unspecified: how it derives a hostname from a workload id, how it resolves and follows a Takeover, and what it discloses about the traffic it fronts. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
+6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. Its first open question — authority — is now **closed**: the Gateway Grant (§3.1.3) is the delegation, `status` honours one (§6.5), and the grant's `http_port` says which of a spawn's `ports` is the HTTP one, so nothing is told to a Workload Gateway out of band. The gateway itself is now specified in **§12**, which opens with what a gateway is, how it finds its grants and the hostname it derives from a workload id, and says what its error page tells a tenant. What §12 still has to say is listed in §12.4: how a gateway resolves a workload across its Standby Set and forwards to it, how it follows a Takeover, and what fronting a Hidden Provider's workload discloses. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
+
+---
+
+## 12. Workload Gateway
+
+A **Workload Gateway** fronts a workload at a stable hostname, resolving its `workload_id` to whichever provider is currently running it (ADR 0013). It exists because the stable identifier in this protocol is the workload id and not the provider: a Standby Set shares one workload id across several providers, and a Takeover moves the workload to a different provider, with a different host and a different assigned port, with no tenant online to help (§7.1, ADR 0010). A name owned by a provider names something that can move out from under it.
+
+A gateway is an ordinary TOON app, reached through its own connector. **Nothing in §4–§10 changes for it.** It is not a party to a lease: it holds none, buys none, extends none and ends none, it pays for nothing, and it calls no paid route (§5). Its whole authority over a workload is a **Gateway Grant** (§3.1.3), and the whole of what that authority buys is reading `status` (§6.5).
+
+A tenant may run its own gateway or use somebody else's. A gateway that terminates TLS **reads the traffic it fronts**; that is the cost of the name, and it is one party the tenant chooses rather than every provider the tenant happened to buy standby capacity from.
+
+### 12.1 Finding its grants
+
+A gateway learns what to serve without being told. It watches, on the relays it is configured with, **one** filter:
+
+```json
+{ "kinds": [30438], "#p": ["<gateway pubkey>"] }
+```
+
+Every Gateway Grant naming this gateway carries that `p` tag (§3.1.3), so publishing the grant **is** telling the gateway: no tenant makes contact with it, registers with it or holds an account on it. A relay read is free, so watching costs a gateway nothing and buys nothing.
+
+A gateway MUST verify each event's `id` and `sig` and MUST refuse a grant that is not a kind `30438` event signed by somebody, whose `d` tag equals its content's `workload_id`, whose `gateway` is the gateway's own key, whose `http_port` is a port, whose `standby_set` is a non-empty list of pubkeys and whose `expires_at` is a unix time. A malformed grant is ignored and logged; it MUST NOT stop the gateway serving the other workloads it holds.
+
+A grant is addressable on the workload id, so there is at most **one** grant per workload and a later one **replaces** the one held — the later `created_at`, and on a tie the lower `id`, exactly as a relay replaces a replaceable event. Renewal, rotation and a change of Standby Set are therefore the same act as publishing, and all take effect with no restart and no operator action:
+
+- a later grant with a further `expires_at` renews;
+- a later grant naming a **different** gateway withdraws the workload from this one, which MUST stop serving it;
+- a grant that reaches its `expires_at` stops being served (§12.3), and starts again by itself if its tenant republishes.
+
+A gateway MUST NOT read a grant it was handed by a request, and MUST NOT serve a workload it holds no published grant for: the grant it serves is the one the tenant published, and that is the only one.
+
+### 12.2 The canonical hostname
+
+Every workload a gateway holds a grant for is served at
+
+```
+<canonical label>.<gateway domain>
+```
+
+**always**, whatever else it may also be served at. The canonical label is the **lowercase, unpadded base32 (RFC 4648) encoding of the 32-byte `workload_id`**: 52 characters, where the 64 hex characters of the same id would not fit DNS's 63-character label. Padding is omitted — `=` is not a legal label character and the length of a workload id is fixed — and the alphabet (`a`–`z`, `2`–`7`) is one a DNS label allows and DNS's own case-insensitivity does not disturb.
+
+```
+workload_id  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+label        vkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkva
+served at    https://vkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkva.<gateway domain>/
+```
+
+The label is **derived, never assigned**: a tenant computes it from the workload id it chose, two gateways holding the same grant serve the same label, and a Takeover changes nothing about the name. A gateway matches the `Host` of a request case-insensitively, ignoring a port and a trailing dot, and only as **one** label under its own domain: a deeper name, the bare domain, an address and a name under another domain are all hostnames it holds no grant for.
+
+**TLS is terminated at the gateway**, for the gateway's own domain, with the gateway's own certificate. A workload is therefore reachable over HTTPS while holding no certificate itself, and no provider ever owns a domain, runs ACME or holds a tenant's certificate key (§9, ADR 0013). A gateway MAY additionally offer a plain-HTTP listener; that is a deployment choice and not part of this protocol.
+
+### 12.3 The gateway error page
+
+Until a workload resolves, and whenever it cannot, a request is answered **`503` with a body naming the reason**, never with silence or a dropped connection. A tenant whose URL stopped working must be able to tell a stopped workload from an expired grant from a broken gateway, and none of those is visible from a closed connection.
+
+The body is the error shape of §5 — exactly the two keys `error` and `message` — where `error` is one of the reasons below and `message` says what happened in words. A gateway MAY answer a browser a readable page instead, carrying the same reason.
+
+| Reason | Means |
+|---|---|
+| `no_grant` | This hostname names no workload this gateway holds a grant for. |
+| `grant_expired` | The grant's `expires_at` has passed. Republishing it under the same workload id renews it (§3.1.3). |
+| `not_resolved` | A grant is held, but where the workload runs is not yet known. |
+
+A reader MUST NOT refuse a reason it does not know: later rounds add reasons, exactly as the Eviction Notice's `reason` does (§6.7).
+
+A request to a hostname the gateway holds no grant for is answered by the **gateway itself** and MUST reach no provider and no workload: nothing is dialled, no `status` is sent, and no relay is read on its account. A gateway is not a probe, and an unknown hostname must not become one.
+
+### 12.4 What this section still has to say
+
+Three things belong in §12 and are not written yet: **resolution and forwarding** — how a gateway asks each Standby Set member for `status`, which answer makes a member the target, which port it forwards to, what a forwarded request carries and how a readable `name` is served; **following the workload** — the Takeover a gateway watches for, the settle window before it re-resolves, and how often it re-asks; and **hidden workloads** — reaching a Hidden Provider's lease through an anon client, and what fronting one discloses (§10).
 
 ---
 
