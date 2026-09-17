@@ -12,9 +12,12 @@
 //            `routes.listing` are the ones the Listing events derive to — the
 //            paid `.spawn` and `.extend` of every Listing, plus `.standby`
 //            and `.standby.extend` at `standby_price` for exactly the
-//            Listings that carry one; and a Profile that declares `hidden`
+//            Listings that carry one; a Profile that declares `hidden`
 //            carries no `host` while every Listing of that provider carries
-//            the `hidden:true` label, and no other Listing does;
+//            the `hidden:true` label, and no other Listing does; and a lease
+//            of a hidden provider is reached at a `.anyone` host of its own,
+//            on the same ports a public lease gets, with no IP anywhere in
+//            the answer;
 //   produce  from the test keys in `constants.json`, every event is rebuilt
 //            from its fields — a Lease Request from its PARSED `content` and
 //            its tags — and signed with all-zero auxiliary randomness, and
@@ -245,6 +248,20 @@ function roundTrip(where, event, { content, expectSameSig = true } = {}) {
   );
   return rebuilt;
 }
+
+// An IP address in a string value. A Hidden Provider's answers must carry
+// none — its whole claim is that a tenant never learns where it is (spec
+// §10) — so the test is over every string in the body, not just the host.
+const IPV4 = /(?:^|[^\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:[^\d.]|$)/;
+const IPV6 = /(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F]{0,4}|[0-9a-fA-F]{1,4}::/;
+
+function* strings(value) {
+  if (typeof value === 'string') yield value;
+  else if (Array.isArray(value)) for (const item of value) yield* strings(item);
+  else if (value !== null && typeof value === 'object') for (const item of Object.values(value)) yield* strings(item);
+}
+
+const namesAnAddress = (value) => [...strings(value)].some((s) => IPV4.test(s) || IPV6.test(s));
 
 const hasTag = (event, cells) =>
   event.tags.some((t) => cells.every((c, i) => t[i] === c));
@@ -498,6 +515,32 @@ for (const file of files) {
       report(
         ['primary', 'standby'].includes(doc.request_body.role),
         `${file}: role is "primary" | "standby", the whole vocabulary §6.4 asks about`,
+      );
+    }
+  }
+
+  // Where a lease is reached (§6.2, §6.5). On a HIDDEN PROVIDER (§10) the
+  // host is a `.anyone` address belonging to that one lease — the provider
+  // published none of its own — and on every other provider it is the
+  // provider's host, never a `.anyone` name. The ports do not move either
+  // way: a tenant dials `ssh_port` and each `host_port` on whichever host it
+  // was given, so the hidden answer is the public one with the host swapped
+  // and nothing else changed.
+  if ((surface === 'spawn' || surface === 'status') && doc.response_body?.access) {
+    const access = doc.response_body.access;
+    const hidden = kase.endsWith('.hidden');
+    report(
+      hidden ? /^[a-z2-7]+\.anyone$/.test(access.host) : !String(access.host).endsWith('.anyone'),
+      hidden
+        ? `${file}: access.host is the lease's own .anyone address`
+        : `${file}: access.host is the provider's own host, not a .anyone address`,
+    );
+    if (hidden) {
+      report(!namesAnAddress(doc.response_body), `${file}: no IP address anywhere in the answer`);
+      const open = load(file.replace(/\.hidden\.json$/, '.json')).response_body.access;
+      report(
+        canonical({ ...access, host: null }) === canonical({ ...open, host: null }),
+        `${file}: the same ssh_port and ports the public answer gives — only the host differs`,
       );
     }
   }
