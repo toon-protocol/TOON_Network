@@ -611,15 +611,19 @@ A gateway learns what to serve without being told. It watches, on the relays it 
 
 Every Gateway Grant naming this gateway carries that `p` tag (§3.1.3), so publishing the grant **is** telling the gateway: no tenant makes contact with it, registers with it or holds an account on it. A relay read is free, so watching costs a gateway nothing and buys nothing.
 
-A gateway MUST verify each event's `id` and `sig` and MUST refuse a grant that is not a kind `30438` event signed by somebody, whose `d` tag equals its content's `workload_id`, whose `gateway` is the gateway's own key, whose `http_port` is a port, whose `standby_set` is a non-empty list of pubkeys and whose `expires_at` is a unix time. A malformed grant is ignored and logged; it MUST NOT stop the gateway serving the other workloads it holds.
+A relay is not trusted. A gateway MUST re-derive each event's `id` and verify its `sig`, and MUST read an event as a Gateway Grant only when it is kind `30438`, its `d` tag equals its content's `workload_id`, its `http_port` is a port, its `standby_set` is a non-empty list of pubkeys and its `expires_at` is a unix time. Anything else is not a grant: it is ignored and logged, and one malformed event MUST NOT stop the gateway serving the workloads it holds.
 
-A grant is addressable on the workload id, so there is at most **one** grant per workload and a later one **replaces** the one held — the later `created_at`, and on a tie the lower `id`, exactly as a relay replaces a replaceable event. Renewal, rotation and a change of Standby Set are therefore the same act as publishing, and all take effect with no restart and no operator action:
+Whether a grant is **this** gateway's is a separate question from whether it is a grant, and is answered by its `gateway` field. A gateway serves only a grant naming its own key — and it must still read the others, because the newest grant for a workload is what decides, whoever it names.
+
+`name` is the one field a defect does not cost the grant: an absent or unusable `name` MUST leave the workload served at its canonical hostname (§12.2), because that is the name a tenant can always derive. A gateway logs the defect and drops the name.
+
+A grant is addressable on the workload id, so there is at most **one** grant per workload and a later one **replaces** the one held — the later `created_at`, and on a tie the lower `id`, exactly as a relay replaces a replaceable event. A gateway MUST apply that rule to the newest grant it has **seen** for a workload rather than to the one it is serving: several relays carry the same grant, so an earlier grant arriving again after a later one is ordinary and MUST change nothing. Renewal, rotation and a change of Standby Set are therefore the same act as publishing, and all take effect with no restart and no operator action:
 
 - a later grant with a further `expires_at` renews;
-- a later grant naming a **different** gateway withdraws the workload from this one, which MUST stop serving it;
+- a later grant naming a **different** gateway withdraws the workload from this one, which MUST stop serving it. Such a grant names the other gateway in its `p` tag, so the filter above does not carry it; how a gateway comes to see one is part of following the workload (§12.4);
 - a grant that reaches its `expires_at` stops being served (§12.3), and starts again by itself if its tenant republishes.
 
-A gateway MUST NOT read a grant it was handed by a request, and MUST NOT serve a workload it holds no published grant for: the grant it serves is the one the tenant published, and that is the only one.
+A gateway serves only grants it found this way. A grant handed to it by a request — anyone can send one — MUST NOT put a workload on a hostname, because publishing is what a tenant does to choose a gateway and being sent something is not.
 
 ### 12.2 The canonical hostname
 
@@ -659,7 +663,7 @@ A request to a hostname the gateway holds no grant for is answered by the **gate
 
 ### 12.4 What this section still has to say
 
-Three things belong in §12 and are not written yet: **resolution and forwarding** — how a gateway asks each Standby Set member for `status`, which answer makes a member the target, which port it forwards to, what a forwarded request carries and how a readable `name` is served; **following the workload** — the Takeover a gateway watches for, the settle window before it re-resolves, and how often it re-asks; and **hidden workloads** — reaching a Hidden Provider's lease through an anon client, and what fronting one discloses (§10).
+Three things belong in §12 and are not written yet: **resolution and forwarding** — how a gateway asks each Standby Set member for `status`, which answer makes a member the target, which port it forwards to, what a forwarded request carries and how a readable `name` is served; **following the workload** — the Takeover a gateway watches for, the settle window before it re-resolves, how often it re-asks, and how it sees a grant that rotated a workload away from it; and **hidden workloads** — reaching a Hidden Provider's lease through an anon client, and what fronting one discloses (§10).
 
 ---
 
