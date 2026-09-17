@@ -116,7 +116,7 @@ Only the tenant signs one. It is addressable on the workload id, so republishing
 
 ```
 ["d", "<workload_id>"]              the workload this grant is about
-["p", "<gateway pubkey>"]           the gateway it names, so one filter finds every grant naming a gateway
+["p", "<gateway pubkey>"]           the Workload Gateway it names, so one filter finds every grant naming one
 ["L", "toon.network"]
 ```
 
@@ -135,13 +135,13 @@ Content:
 
 - `workload_id` MUST equal the `d` tag. A provider checks both (§6.5), so a relay's `#d` filter and the signed content can never be made to disagree.
 - `gateway` is the **one** key this grant admits. A grant is a delegation to a named key, not a bearer credential: a request signed by any other key is refused however good the grant looks.
-- `http_port` is which of the spawn's `ports` carries HTTP, as the **container** port the spawn asked for (§6.2) — the host port is the provider's to choose and comes back in `access`. It answers ADR 0013's "which port is the HTTP one?" without anything being told to a gateway out of band.
-- `standby_set` is the workload's Standby Set, primary first (§7), so a gateway knows every member to ask. A standalone lease's has one entry.
-- `name` is optional: a readable label a gateway MAY serve the workload at beside the canonical name it derives from the workload id.
+- `http_port` is which of the spawn's `ports` carries HTTP, as the **container** port the spawn asked for (§6.2) — the host port is the provider's to choose and comes back in `access`. It answers ADR 0013's "which port is the HTTP one?" without anything being told to a Workload Gateway out of band.
+- `standby_set` is the workload's Standby Set, primary first (§7), so a Workload Gateway knows every member to ask. A standalone lease's has one entry.
+- `name` is optional: a readable label a Workload Gateway MAY serve the workload at beside the canonical name it derives from the workload id.
 
-`http_port`, `standby_set` and `name` are for the **gateway**. A provider reads none of them — it already knows its own lease — and MUST NOT act on them.
+`http_port`, `standby_set` and `name` are for the **Workload Gateway**. A provider reads none of them — it already knows its own lease — and MUST NOT act on them.
 
-A provider never fetches a grant from a relay and never stores one: the only grant it ever sees is the one a request handed it (§6.5). Publishing is how the *gateway* finds the grant, not how the provider does.
+A provider never fetches a grant from a relay and never stores one: the only grant it ever sees is the one a request handed it (§6.5). Publishing is how the *Workload Gateway* finds the grant, not how the provider does.
 
 ---
 
@@ -403,25 +403,28 @@ The signer MUST be the lease's tenant (`not_tenant`), **or** a Workload Gateway 
 
 #### Reading with a Gateway Grant
 
-`grant` is optional and carries a whole signed Gateway Grant event (§3.1.3) as JSON. It lets a **Workload Gateway** sign a `status` with its own key and be answered what the tenant would have been answered — every field above, unchanged. A grant delegates reading this lease and nothing else: `terminate`, `spawn`, `extend`, `.standby.extend` and `availability` do not read the field, and a grant on a termination changes nothing about who may terminate.
+`grant` is optional and carries a whole signed Gateway Grant event (§3.1.3) as JSON. It lets a **Workload Gateway** sign a `status` with its own key and be answered what the tenant would have been answered — every field above, unchanged. A grant delegates reading this lease and nothing else. `grant` is a field of this content and of `terminate`'s (§6.6) and of no other: a termination parses it and reads it not at all, so a Workload Gateway carrying a perfectly good grant is `not_tenant` there and a grant on the tenant's own termination changes nothing; and on `.spawn`, `.extend`, `.standby.extend` and `availability` it is a field this spec does not name for those requests, so it is `invalid_request` like any other unknown field (§6.1.1) rather than something sent and dropped.
 
 The provider checks the grant **after** the signed-route checks of §6.1.1 — signature, kind, `p` tags, `op`, window, replay — and accepts only when all of these hold:
 
-1. the grant's own `id` and `sig` verify, and it is kind `30438`;
-2. its signer is **this lease's tenant**;
-3. its `d` tag and its content's `workload_id` are both the `workload_id` of the request;
-4. its content's `gateway` is the key that signed the request;
-5. `now <= expires_at`.
+1. the grant's own `id` and `sig` verify;
+2. it is kind `30438`;
+3. its signer is **this lease's tenant**;
+4. its `d` tag and its content's `workload_id` are both the `workload_id` of the request;
+5. its content's `gateway` is the key that signed the request;
+6. `now <= expires_at`.
 
-Any failure is `bad_grant` — one code for all five, so a gateway learns that its grant does not apply and nothing about the lease. The grant is verified **from the request alone**: the provider performs no relay read and stores nothing, so ADR 0005's rule that identity comes from the signed request holds unchanged and a Hidden Provider answers a granted `status` without opening a single outbound connection (§10). A grant is **not** a replay concern — it is meant to be reused — while the request carrying it is still bound by the window and replay rules of §6.1.
+Any failure is `bad_grant` — one code for all six, so a Workload Gateway learns that its grant does not apply and nothing about the lease. The grant is verified **from the request alone**: the provider performs no relay read and stores nothing, so ADR 0005's rule that identity comes from the signed request holds unchanged and a Hidden Provider answers a granted `status` without opening a single outbound connection (§10). A grant is **not** a replay concern — it is meant to be reused — while the request carrying it is still bound by the window and replay rules of §6.1.
 
-The provider checks only the grant it was handed, so there is **no revocation before expiry**. A tenant renews or rotates by publishing the grant again under the same `d` (§3.1.3), and a tenant that wants a gateway cut off before its grant expires respawns under a new `workload_id` — exactly how Standby Set membership is changed today (§7). Tenants should therefore choose short expiries and renew.
+The provider checks only the grant it was handed, so there is **no revocation before expiry**. A tenant renews or rotates by publishing the grant again under the same `d` (§3.1.3), and a tenant that wants a Workload Gateway cut off before its grant expires respawns under a new `workload_id` — exactly how Standby Set membership is changed today (§7). Tenants should therefore choose short expiries and renew.
 
 ### 6.6 Termination (free)
 
-**Request body:** `{ "request": <kind 4432 event, op=terminate> }`. Content: `{ "workload_id": "…" }`.
+**Request body:** `{ "request": <kind 4432 event, op=terminate> }`. Content: `{ "workload_id": "…", "grant"?: <kind 30438 event> }`.
 
 The signer MUST be the lease's tenant. The provider destroys the workload or releases the reservation immediately. There is no refund.
+
+A termination shares `status`'s content shape, so a `grant` (§6.5) MAY be present — and is **read by nobody**. A Workload Gateway carrying a perfectly good grant is `not_tenant` here exactly as any other stranger is, and a grant on the tenant's own termination changes nothing: a grant delegates reading a lease and nothing more. On every other route — `.spawn`, `.extend`, `.standby.extend` and `availability` — `grant` is a field the spec does not name and so is `invalid_request` like any other (§6.1.1).
 
 It responds with `{ "workload_id", "state" }`, where `state` is `{ "ended": "termination" }` (§6.7), so a tenant needs no second call to see that its lease is over. A lease that has already ended, however it ended, is `expired` (§6.3); a workload id this provider never leased is `unknown_workload`.
 
@@ -586,7 +589,7 @@ A lease's address is created before its workload starts and answers on the same 
 3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger, the two-cadence settle window (measured from each standby's own announcement, so two standbys that saw the silence at different instants settle at different instants) and the five-cadence primary self-stop are first guesses.
 4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
 5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
-6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. Its first open question — authority — is now **closed**: the Gateway Grant (§3.1.3) is the delegation, `status` honours one (§6.5), and the grant's `http_port` says which of a spawn's `ports` is the HTTP one, so nothing is told to a gateway out of band. The gateway itself is still unspecified: how it derives a hostname from a workload id, how it resolves and follows a Takeover, and what it discloses about the traffic it fronts. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
+6. **Hostnames and TLS, and later rounds.** Hostnames and TLS are decided in principle by ADR 0013 (*Proposed*): they stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`. Its first open question — authority — is now **closed**: the Gateway Grant (§3.1.3) is the delegation, `status` honours one (§6.5), and the grant's `http_port` says which of a spawn's `ports` is the HTTP one, so nothing is told to a Workload Gateway out of band. The gateway itself is still unspecified: how it derives a hostname from a workload id, how it resolves and follows a Takeover, and what it discloses about the traffic it fronts. Still later: reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
 
 ---
 

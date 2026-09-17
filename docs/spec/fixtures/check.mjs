@@ -536,7 +536,7 @@ for (const file of files) {
     } else {
       // Everything above passed, so the ONE thing wrong with this grant is
       // its signer — which is what makes it a delegation and not a bearer
-      // token anybody may mint.
+      // credential anybody may mint.
       report(content.grant.pubkey === constants.other_tenant.public_key, `${file}: the defect is the signer: not this lease's tenant`);
     }
   }
