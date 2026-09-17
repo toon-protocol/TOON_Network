@@ -12,7 +12,9 @@
 //            `routes.listing` are the ones the Listing events derive to — the
 //            paid `.spawn` and `.extend` of every Listing, plus `.standby`
 //            and `.standby.extend` at `standby_price` for exactly the
-//            Listings that carry one;
+//            Listings that carry one; and a Profile that declares `hidden`
+//            carries no `host` while every Listing of that provider carries
+//            the `hidden:true` label, and no other Listing does;
 //   produce  from the test keys in `constants.json`, every event is rebuilt
 //            from its fields — a Lease Request from its PARSED `content` and
 //            its tags — and signed with all-zero auxiliary randomness, and
@@ -313,6 +315,40 @@ for (const file of files) {
     if (kase === 'eviction') {
       report(['abuse', 'policy', 'maintenance', 'other'].includes(doc.content.reason), `${file}: reason is one of §6.7's codes`);
       report(tagValue(doc.event, 'x') === doc.content.workload_id, `${file}: x tag is the workload id`);
+    }
+    // A Hidden Provider (spec §4.1, §10) declares `hidden: true` and then
+    // publishes NO host — not a null, not an empty string, no key — because
+    // a host is exactly what it promised not to reveal. A provider that is
+    // not hidden publishes one. `connector_url` of a hidden provider is at
+    // an `.anyone` host, the only way its connector is reached.
+    if (kase === 'profile' || kase === 'profile.hidden') {
+      const hidden = doc.content.hidden === true;
+      report(typeof doc.content.hidden === 'boolean', `${file}: hidden is a boolean`);
+      report(hidden === (kase === 'profile.hidden'), `${file}: hidden is ${kase === 'profile.hidden'}`);
+      report(
+        hidden ? !('host' in doc.content) : typeof doc.content.host === 'string' && doc.content.host.length > 0,
+        hidden ? `${file}: a hidden Profile carries no host key at all` : `${file}: a Profile that is not hidden carries its host`,
+      );
+      const connectorHost = new URL(doc.content.connector_url).hostname;
+      report(
+        hidden ? /^[a-z2-7]+\.anyone$/.test(connectorHost) : !connectorHost.endsWith('.anyone'),
+        hidden ? `${file}: connector_url is at an .anyone host` : `${file}: connector_url is at a clearnet host`,
+      );
+    }
+    // Every Listing of a hidden provider carries `["l", "hidden:true",
+    // "toon.network"]` beside its other labels (spec §4.2, §4.4); a Listing
+    // of any other provider carries no `hidden:` label at all — never
+    // `hidden:false` — so absence is the filter for public compute.
+    if (kase.startsWith('listing')) {
+      const hiddenLabels = doc.event.tags.filter((t) => t[0] === 'l' && String(t[1]).startsWith('hidden:'));
+      if (kase.endsWith('.hidden')) {
+        report(hasTag(doc.event, ['l', 'hidden:true', constants.label]), `${file}: carries ["l", "hidden:true", "${constants.label}"]`);
+        report(hiddenLabels.length === 1, `${file}: exactly one hidden label`);
+      } else {
+        report(hiddenLabels.length === 0, `${file}: carries no hidden: label (never hidden:false)`);
+      }
+      report(hasTag(doc.event, ['l', 'isolation:' + load('directory.profile.json').content.isolation, constants.label]), `${file}: carries the isolation label`);
+      report(tagValues(doc.event, 'l').some((v) => v.startsWith('arch:')), `${file}: carries the arch label`);
     }
   }
 
