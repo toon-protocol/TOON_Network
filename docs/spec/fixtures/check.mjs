@@ -17,7 +17,11 @@
 //            the `hidden:true` label, and no other Listing does; and a lease
 //            of a hidden provider is reached at a `.anyone` host of its own,
 //            on the same ports a public lease gets, with no IP anywhere in
-//            the answer;
+//            the answer; a Gateway Grant is signed by the tenant rather than
+//            by the gateway it names and agrees with its own `d` and `p`
+//            tags, and a `status` that carries one is signed by the GATEWAY
+//            and answered exactly what the tenant was answered, while the
+//            `bad_grant` refusal differs in exactly one thing;
 //   produce  from the test keys in `constants.json`, every event is rebuilt
 //            from its fields — a Lease Request from its PARSED `content` and
 //            its tags — and signed with all-zero auxiliary randomness, and
@@ -178,6 +182,7 @@ const ERROR_CODES = [
   'unknown_workload', 'wrong_listing_version', 'not_tenant', 'workload_id_taken',
   'refused_image', 'no_capacity', 'no_matching_arch', 'invalid_request',
   'expired', 'not_standby', 'not_running', 'bad_signature', 'stale_request',
+  'bad_grant',
 ];
 
 // ── the checks ──────────────────────────────────────────────────────────────
@@ -474,6 +479,66 @@ for (const file of files) {
       doc.response_body.workload_id === content.workload_id,
       `${file}: the answer names the workload id the whole set shares`,
     );
+  }
+
+  // The Gateway Grant (§3.1.3) as a tenant publishes it: addressable on the
+  // workload id, naming ONE gateway both in content and in a `p` tag so a
+  // gateway finds it with a single filter, labelled like every other
+  // published TOON Network event — and signed by the TENANT, never by a
+  // provider and never by the gateway it names.
+  if (surface === 'gateway_grant') {
+    report(doc.event.pubkey === constants.tenant.public_key, `${file}: signed by the fixture tenant, not a provider`);
+    roundTrip(`${file} event`, doc.event);
+    report(hasTag(doc.event, ['L', constants.label]), `${file}: carries ["L", "${constants.label}"]`);
+    report(tagValue(doc.event, 'd') === doc.content.workload_id, `${file}: d is the workload id`);
+    report(tagValue(doc.event, 'p') === doc.content.gateway, `${file}: the p tag names the same gateway as the content`);
+    report(doc.content.gateway === constants.gateway.public_key, `${file}: the gateway is constants.json's gateway key`);
+    report(doc.content.gateway !== doc.event.pubkey, `${file}: a gateway never signs its own grant`);
+    report(
+      Number.isInteger(doc.content.http_port) && doc.content.http_port > 0 && doc.content.http_port < 65536,
+      `${file}: http_port is a container port`,
+    );
+    report(
+      Array.isArray(doc.content.standby_set) && doc.content.standby_set.length >= 1 &&
+        doc.content.standby_set.every((k) => /^[0-9a-f]{64}$/.test(k)),
+      `${file}: standby_set is a non-empty list of pubkeys, primary first`,
+    );
+    report(doc.content.expires_at > constants.now, `${file}: expires_at is ahead of the fixture clock`);
+  }
+
+  // A `status` carrying a grant (§6.5). The GATEWAY signs the request with
+  // its own key and the grant rides inside the signed content, so the
+  // provider verifies it out of this request alone — there is nothing else
+  // in the fixture it could have read. A granted answer must be the tenant's
+  // answer unchanged; the refusal must differ in exactly one thing.
+  if ((surface === 'status' && kase === 'granted') || (surface === 'error' && kase === 'bad_grant')) {
+    const request = doc.request_body.request;
+    const content = JSON.parse(request.content);
+    report(request.pubkey === constants.gateway.public_key, `${file}: the request is signed by the gateway, not the tenant`);
+    report(
+      canonical(Object.keys(content).sort()) === canonical(['grant', 'workload_id']),
+      `${file}: the content is exactly { workload_id, grant }`,
+    );
+    checkEvent(`${file} content.grant`, content.grant, { kindName: 'K_GATEWAY_GRANT' });
+    report(content.grant.pubkey !== request.pubkey, `${file}: the grant is not self-signed by the gateway`);
+    report(tagValue(content.grant, 'd') === content.workload_id, `${file}: the grant is about the workload the request names`);
+    const granted = JSON.parse(content.grant.content);
+    report(granted.workload_id === content.workload_id, `${file}: the grant's content names that workload too`);
+    report(granted.gateway === request.pubkey, `${file}: the grant names the request's signer as its gateway`);
+    report(granted.expires_at > request.created_at, `${file}: the grant had not expired when the request was signed`);
+    if (kase === 'granted') {
+      report(content.grant.pubkey === constants.tenant.public_key, `${file}: the grant is signed by the lease's tenant`);
+      report(canonical(content.grant) === canonical(load('gateway_grant.json').event), `${file}: the grant is gateway_grant.json unchanged`);
+      report(
+        canonical(doc.response_body) === canonical(load('status.running.json').response_body),
+        `${file}: the answer is exactly what the tenant was answered in status.running`,
+      );
+    } else {
+      // Everything above passed, so the ONE thing wrong with this grant is
+      // its signer — which is what makes it a delegation and not a bearer
+      // credential anybody may mint.
+      report(content.grant.pubkey === constants.other_tenant.public_key, `${file}: the defect is the signer: not this lease's tenant`);
+    }
   }
 
   if (surface === 'error') {
