@@ -580,6 +580,8 @@ A lease's address is created before its workload starts and answers on the same 
 
 `hidden` is a **self-assertion**: nothing in this protocol, and nobody outside the provider, verifies that the conditions above hold. A provider's own startup gate is the only check, and it checks configuration, not behaviour. The flag hides where a provider is, not that it was paid: payments still reveal who paid whom on a public chain (ADR 0008).
 
+A Hidden Provider's workload MAY be given a public name by a Workload Gateway (§12.8). That reveals the **workload** — that it exists, and its traffic pattern, to the gateway and to whoever reaches the name — and not the provider: the gateway is an ordinary client of the per-lease `.anyone` address, and learns nothing about where the provider is that the tenant's own client would not. It is the tenant's choice to make, by publishing a Gateway Grant (§3.1.3); nothing a provider does or publishes makes it, and a provider stays hidden whether or not its tenants make it.
+
 ---
 
 ## 11. Open items
@@ -658,6 +660,7 @@ The body is the error shape of §5 — exactly the two keys `error` and `message
 | `not_resolved` | A grant is held, but where the workload runs is not yet known. |
 | `no_running_member` | Every member of the Standby Set answered, and none of them is running the workload (§12.4). |
 | `member_unreachable` | A member that would answer for the workload told this gateway nothing: its connector could not be reached or refused the request, or the address it gave will not answer (§12.4). |
+| `no_proxy` | The workload is on a Hidden Provider — its connector or its lease is at an `.anyone` address — and this gateway has no anon client to reach one through. Nothing was tried (§12.8). |
 
 `no_running_member` and `member_unreachable` are not the same answer and MUST NOT be collapsed: the first says nothing is running the workload, which is a fact about the lease, and the second says this gateway cannot see what may well be running, which is a fact about the gateway's reach. A tenant acts on them differently.
 
@@ -710,7 +713,17 @@ Because a name is a convenience and the canonical hostname is not, a gateway MAY
 
 ### 12.7 What this section still has to say
 
-Two things belong in §12 and are not written yet: **following the workload** — the Takeover a gateway watches for, the settle window before it re-resolves, how often it re-asks, and how it sees a grant that rotated a workload away from it; and **hidden workloads** — reaching a Hidden Provider's lease through an anon client, and what fronting one discloses (§10).
+One thing belongs in §12 and is not written yet: **following the workload** — the Takeover a gateway watches for, the settle window before it re-resolves, how often it re-asks, and how it sees a grant that rotated a workload away from it. Hidden workloads are §12.8.
+
+### 12.8 A workload on a Hidden Provider
+
+A Hidden Provider publishes no host: its connector is reachable only at an `.anyone` address, and every lease it runs is reachable only at a per-lease `.anyone` address (§10, ADR 0008). A gateway fronts such a workload exactly as it fronts any other, and the provider stays hidden, because **the gateway is an ordinary client of the per-lease address**: it dials an `.anyone` host through an anon client — a `socks5h://` proxy to a running `anon` daemon, as a tenant of a hidden lease does (§10) — and nothing else in §12.4 or §12.5 changes. The grant, the `status` request, which member is the running one, the target port and the forwarded headers are all the same.
+
+**Both legs go the same way.** A Standby Set member whose Profile gives a `connector_url` at an `.anyone` host is sent `status` (§12.4) through the proxy; a running member whose `access.host` is an `.anyone` name is forwarded to (§12.5) through the same proxy. **Any other host is dialled directly.** A Standby Set that mixes a public member with a hidden one therefore resolves and forwards with no configuration beyond the proxy: each member is reached the way its own address calls for, and nothing in the grant says which members are hidden.
+
+An `.anyone` name MUST NOT be resolved or dialled directly, under any circumstances. It has no meaning to a system resolver, and handing one to the resolver would put a hidden service into a plaintext DNS query — the exact fact hiding withholds. So the name goes to the proxy **as a name** (`socks5h`, under which the proxy resolves it; not `socks5`, under which the gateway would), and **a gateway with no proxy configured MUST refuse a workload that needs one**, with the reason `no_proxy` (§12.3), before anything is tried. `no_proxy` is not `member_unreachable` and MUST NOT be collapsed into it: the first is a fact about the gateway's configuration and the second about its reach, and an operator acts on them differently. A relay a Profile names at an `.anyone` host (§12.4) is likewise never dialled directly: a gateway that does not reach relays through its anon client does not watch that relay, and SHOULD log that it did not.
+
+**What fronting a hidden workload discloses.** A gateway reads every request it fronts, hidden or not (§12); that is the cost of the name, and the tenant chooses who pays it. Fronting a Hidden Provider's workload reveals **the workload's existence and its traffic pattern, and not the provider's location**: the gateway is one more client of the per-lease `.anyone` address, and learns nothing about where the provider is that the tenant's own client would not (ADR 0008). The provider stays hidden; the tenant's workload stops being, and that is the tenant's choice to make, by publishing the grant (§10).
 
 ---
 
