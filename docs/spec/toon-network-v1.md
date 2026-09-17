@@ -771,6 +771,9 @@ v1 is developed against `infra/sandbox`, then pointed at production URLs.
 | Settlement | Solana mock USDC (the hub's client leg) and anvil mock USDC; a provider connector copies `conf/connector-store.toml` |
 | Provider connector | Level 2 shape (README §5); tenants may pay it directly or through the hub |
 | Hidden Provider | the sandbox `hs` profile |
+| Workload Gateway | the sandbox `gateway` profile (§12): domain `gw.localhost`, so a workload is at `http://<canonical label>.gw.localhost:3280/` and `https://…:3443/` (a self-signed wildcard certificate, `conf/workload-gateway-tls/`); its key in `conf/workload-gateway.conf`; its own connector at `http://localhost:3260` terminating no paid route; grants watched on `ws://relay:7100` (the sandbox relay by its compose name; `ws://localhost:7100` from the host) |
+| Gateway Grant (tenant side) | `node scripts/grant.mjs` in `infra/sandbox`, the `grant` tool with the sandbox's values: paid on `g.toon.relay` from mnemonic account index 4, gateway defaulting to the sandbox gateway's key, Standby Set members by compose name (`provider`, `provider2`, `provider-hs`) |
+| `.anyone` through the gateway | `socks5h://anon-client:9050`, the `hs` profile's buyer-side proxy, with the hidden provider's `status` dialled at its app on the compose network; a hand recipe on `make up-hs`, not a smoke |
 
 ### A.1 The `ci` Listing
 
