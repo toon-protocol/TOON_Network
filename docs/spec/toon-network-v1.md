@@ -44,11 +44,18 @@ tenant ──paid sealed packet (direct or n hops)──▶ provider connector �
 |---|---|---|
 | Provider Nostr key | provider | Provider Profile, Listings, Liveness, Takeover events, Eviction Notices |
 | Connector sealing key | provider's connector | nothing in this protocol; tenants seal to it |
-| Tenant Nostr key | tenant | Lease Requests (§6.1), Gateway Grants (§3.1.3), Deployments (§3.1.2) |
 | Publisher Nostr key | image or template publisher | Image Registry entries, Blob Records, Templates |
 
+A tenant has no key in this table. It signs nothing, anywhere: what it holds is a secret, not an identity.
+
+| Secret | Held by | Proves |
+|---|---|---|
+| Lease root secret | tenant | nothing to anybody. 32 random bytes per Lease, from which every Continuation Token of that Lease derives (§6.1) |
+| Continuation Token | tenant **and** the Provider it was derived for | to that Provider alone, that whoever presents it is the party that took this Lease |
+
 - **Pinned sealing key:** a Provider Profile MUST publish its connector's sealing public key. A tenant seals to that key and refuses if the URL's self-description reports another key (ADR 0011).
-- **Payer vs tenant:** the provider never links a payer to a tenant. Tenant identity comes only from a Lease Request signature (ADR 0005).
+- **Payer vs tenant:** the provider never links a payer to a tenant. It never learns who the tenant *is* at all: a Lease Request carries a Continuation Token, and a token names nobody (ADR 0005, ADR 0016).
+- **A Tenant Nostr key is out of the request path.** The reserved tenant-side Deployment (§3.1.2) is signed by whatever key its tooling uses; nothing in this protocol reads one, and no Provider ever sees it.
 
 ### 3.1 Event kinds
 
@@ -56,15 +63,16 @@ Every TOON Network kind is allocated from one contiguous block per NIP-01 class,
 
 | Class | Block | Allocated | Free for later kinds |
 |---|---|---|---|
-| Regular (`1000`–`9999`) | `4432`–`4441` | `4432`–`4433` | `4434`–`4441` |
+| Regular (`1000`–`9999`) | `4432`–`4441` | `4433` | `4432`, `4434`–`4441` |
 | Replaceable (`10000`–`19999`) | `10432`–`10441` | `10432`–`10433` | `10434`–`10441` |
-| Addressable (`30000`–`39999`) | `30432`–`30441` | `30432`–`30438` | `30439`–`30441` |
+| Addressable (`30000`–`39999`) | `30432`–`30441` | `30432`–`30437` | `30438`–`30441` |
 
 A new TOON Network kind MUST be taken from the free range of the block for its class, lowest number first. When a block runs out, the next block is chosen by the same collision check as §3.1.1 and recorded here.
 
+**Two numbers were allocated and given back.** `4432` was the Lease Request and `30438` the Gateway Grant. A Lease Request is not a Nostr event any more, and a gateway's delegation is derived rather than published (ADR 0016), so both numbers are free again and a later kind takes them in the ordinary way. A freed number inside a reserved block is not a contradiction of ADR 0012: the block is still one block, and the rule is still lowest free number first.
+
 | Kind | Constant | Event | Class | Signer | Section |
 |---|---|---|---|---|---|
-| `4432` | `K_LEASE_REQUEST` | Lease Request | regular, **never published** | Tenant | §6.1 |
 | `4433` | `K_EVICTION` | Eviction Notice | regular | Provider | §6.7 |
 | `10432` | `K_PROFILE` | Provider Profile | replaceable | Provider | §4.1 |
 | `10433` | `K_LIVENESS` | Liveness | replaceable | Provider | §4.3 |
@@ -74,13 +82,12 @@ A new TOON Network kind MUST be taken from the free range of the block for its c
 | `30435` | `K_BLOB` | Blob Record | addressable, `d` = `sha256:<hex>` | Uploader | §8.2 |
 | `30436` | `K_TEMPLATE` | Template | addressable, `d` = template name | Publisher | §8.3 |
 | `30437` | `K_DEPLOYMENT` | Deployment | addressable, `d` = environment | Tenant | §3.1.2 |
-| `30438` | `K_GATEWAY_GRANT` | Gateway Grant | addressable, `d` = workload id | Tenant | §3.1.3 |
 
-Every event in the table except kind `4432` carries `["L","toon.network"]`, so the whole namespace is one label. A kind `4432` event is carried inside a request body and MUST NOT reach a relay (§6.1).
+Every event in the table carries `["L","toon.network"]`, so the whole namespace is one label. Every one of them is signed by a **Provider** or by a **Publisher**: nothing a Tenant produces is an event at all, so a relay observer finds no Tenant-signed event of this protocol anywhere (ADR 0016).
 
 #### 3.1.1 What these numbers were checked against
 
-Checked on **2026-09-17** for `30438`, and on 2026-09-16 for every number allocated before it; no allocated number appears in any of them:
+Checked on **2026-09-17** for `30438`, and on 2026-09-16 for every number allocated before it; no allocated number appears in any of them. `4432` and `30438` have since been returned to their blocks' free ranges, and the checks below stand for the blocks either way:
 
 - the [NIPs kind table](https://github.com/nostr-protocol/nips#event-kinds), read from `README.md` at `master`, including NIP-69's `38383` (which is why no Paygress kind is reused) and NIP-29's `9000`–`9030` and `39000`–`39009` ranges;
 - the [machine-readable registry of kinds](https://github.com/nostr-protocol/registry-of-kinds) (`schema.yaml` at `master`), which is broader than the README table. The nearest used kinds to the blocks are `4312`/`4454` (regular), `10377`/`11111` (replaceable) and `30403`/`30443` (addressable), so nothing between them is taken — `30438` included;
@@ -107,41 +114,6 @@ Its tags are sketched, not normative:
 The repeated `a` and `x` tags are deliberate: a single `#a` filter finds a Deployment by either its repository or its Listing, and a single `#x` filter finds it by either its workload id or its image digest, which is the same use of `x` as the Eviction Notice (§6.7) and the Image Registry entry (§8.1).
 
 Tenant tooling fixes the exact shape; until it does, a provider MUST ignore kind `30437`.
-
-#### 3.1.3 Gateway Grant: kind `30438` (addressable)
-
-A **Gateway Grant** is a tenant's signed, published delegation that lets **one** Workload Gateway (ADR 0013) read **one** workload's lease state and access details until the grant expires. It delegates reading `.status` (§6.5) and nothing else: it buys nothing, extends nothing, ends nothing, and no other route reads it.
-
-Only the tenant signs one. It is addressable on the workload id, so republishing under the same `d` — a new `expires_at`, a different `gateway` — **replaces** the grant rather than adding one: renewal and rotation are the same act as publishing.
-
-```
-["d", "<workload_id>"]              the workload this grant is about
-["p", "<gateway pubkey>"]           the Workload Gateway it names, so one filter finds every grant naming one
-["L", "toon.network"]
-```
-
-Content:
-
-```json
-{
-  "workload_id": "<64 hex>",
-  "gateway": "<gateway pubkey, hex>",
-  "http_port": <container port>,
-  "standby_set": ["<pubkey>", "…"],
-  "expires_at": <unix seconds>,
-  "name": "<label>"
-}
-```
-
-- `workload_id` MUST equal the `d` tag. A provider checks both (§6.5), so a relay's `#d` filter and the signed content can never be made to disagree.
-- `gateway` is the **one** key this grant admits. A grant is a delegation to a named key, not a bearer credential: a request signed by any other key is refused however good the grant looks.
-- `http_port` is which of the spawn's `ports` carries HTTP, as the **container** port the spawn asked for (§6.2) — the host port is the provider's to choose and comes back in `access`. It answers ADR 0013's "which port is the HTTP one?" without anything being told to a Workload Gateway out of band.
-- `standby_set` is the workload's Standby Set, primary first (§7), so a Workload Gateway knows every member to ask. A standalone lease's has one entry.
-- `name` is optional: a readable label a Workload Gateway MAY serve the workload at beside the canonical name it derives from the workload id.
-
-`http_port`, `standby_set` and `name` are for the **Workload Gateway**. A provider reads none of them — it already knows its own lease — and MUST NOT act on them.
-
-A provider never fetches a grant from a relay and never stores one: the only grant it ever sees is the one a request handed it (§6.5). Publishing is how the *Workload Gateway* finds the grant, not how the provider does.
 
 ---
 
@@ -286,9 +258,10 @@ Every response is JSON. Errors use this shape — exactly these two keys — and
 { "error": "<code>", "message": "<human readable>" }
 ```
 
-Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workload_id_taken`, `refused_image`, `no_capacity`, `no_matching_arch`, `invalid_request`, `expired`, `not_standby`, `not_running`, `bad_signature`, `stale_request`, `bad_grant`.
+Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workload_id_taken`, `refused_image`, `no_capacity`, `no_matching_arch`, `invalid_request`, `expired`, `not_standby`, `not_running`, `stale_request`, `bad_grant`.
 
-- **`bad_grant` vs `not_tenant`:** `bad_grant` is a `status` that carried a Gateway Grant which does not admit its signer (§6.5). A signer that carried no grant at all is `not_tenant`, exactly as before, so the two refusals stay tellable apart: one says *sign as the tenant*, the other *your grant does not apply here*.
+- **`not_tenant`** is a request whose Continuation Token is not the one the Lease was taken with — wrong, or absent altogether (§6.1). The two are one answer on purpose: both assert no authority over the Lease, and telling them apart would leave a prober knowing which half of its guess was wrong.
+- **`bad_grant` vs `not_tenant`:** `bad_grant` is a `status` whose asserted delegation does not apply to this Lease (§6.5). One says *you are not the Tenant*, the other *your delegation does not apply here*.
 
 - **The body is the contract; the HTTP status is not.** A tenant reads `error`, never the status: the connector carries the response inside an ILP packet, and whether an HTTP status survives that at all is the connector's business. A provider MAY answer a refusal with any 4xx it finds fitting (the reference provider uses 400/403/404/409/422; Appendix B's fixtures record its mapping as `response_status`), and a tenant MUST NOT branch on it. `message` is for people and MAY change without notice.
 
@@ -296,27 +269,73 @@ Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workloa
 
 ## 6. Leases
 
-### 6.1 Lease Request: kind `4432` (regular, never published)
+### 6.1 Lease Request
 
-This is a tenant-signed event carried in request bodies. The provider validates it and MUST NOT publish it.
+A Lease Request is a plain JSON object carried in request bodies. Nobody signs it. It is what binds a Lease to the party that bought it, and the only thing it carries about that party is a **Continuation Token** — a secret the Tenant minted, which names nobody (ADR 0016).
 
-- **Tags:**
-  - `["p", "<provider pubkey>"]`: the provider MUST refuse unless one of the `p` tags is its own key. A spawn that forms a Standby Set carries **one `p` tag per member** (§7), because the tenant signs that spawn once and sends the same bytes to every member; every other request carries exactly one `p` tag, and a provider MUST refuse a `status` or a `terminate` that names a second provider. Which `p` tags a spawn may carry is §6.2 step 3, where the `standby_set` is known.
-  - `["op", "spawn" | "status" | "terminate"]`
-  - `["expiration", t]`: the provider MUST refuse if `now > t`, and SHOULD refuse if `t - created_at` exceeds 300 s (`stale_request`).
-- **Replay:** the provider MUST keep the ids of Lease Requests it has accepted until their expiration, and refuse repeats.
+```json
+{
+  "request": {
+    "request_id":   "<32 bytes, hex>",
+    "op":           "spawn" | "standby" | "status" | "terminate",
+    "provider":     "<provider pubkey, hex>",
+    "expiration":   <unix seconds>,
+    "continuation": "<32 bytes, hex>",
+    "content":      { … }
+  }
+}
+```
 
-#### 6.1.1 Signing and packet body encoding
+- **`request_id`** is 32 random bytes chosen by the Tenant, as 64 lowercase hex characters. Nothing is hashed and nothing is canonically serialised on either side, so two implementations have no serialisation to disagree about. The replay set keys on it.
+- **`op`** says what the request asks for, and MUST be the one the route serves: `spawn` on `<addr>.<listing>.v<n>.spawn`, `standby` on `<addr>.<listing>.v<n>.standby`, `status` on `<addr>.status`, `terminate` on `<addr>.terminate`. Anything else is `invalid_request`.
+- **`provider`** is **exactly one** Provider's public key, on every op — a spawn that forms a Standby Set included (§7). A Provider MUST refuse a request naming any other key. A Tenant forming a set sends one request to each member, each naming only that member.
+- **`expiration`** is unix seconds. A Provider MUST refuse if `now > expiration`, and SHOULD refuse if `expiration` is more than 300 s ahead of `now` (`stale_request` for either).
+- **`continuation`** is the Lease's Continuation Token for this Provider. It MAY be absent, which is a request asserting no authority over the Lease — refused, never read as an unauthenticated success (below).
+- **`content`** is the op's own JSON object (§6.2, §6.5, §6.6). A field this spec does not name, anywhere in it, MUST be refused as `invalid_request`, never dropped (ADR 0004).
 
-- **A NIP-01 event, nothing more.** A Lease Request is an ordinary Nostr event of kind `4432` (`K_LEASE_REQUEST`, §3.1) signed by the tenant's Nostr key. Its `id` is the SHA-256 of the NIP-01 serialization `[0, <pubkey>, <created_at>, <kind>, <tags>, <content>]` (UTF-8, no whitespace, NIP-01 escaping), and `sig` is a BIP-340 Schnorr signature over that `id` by `pubkey`. Nothing TOON-specific is hashed or signed, so any NIP-01 library produces and verifies a Lease Request.
-- **Content.** `content` is the op's JSON object (§6.2, §6.5, §6.6) serialised to a string. A field the spec does not name, anywhere in it, MUST be refused as `invalid_request`, never dropped (ADR 0004).
-- **Packet body.** The request body of a signed route is the JSON object `{ "request": <event> }`: the signed event as a JSON object, unmodified, as the value of the single key `request`. It is not re-encoded, base64'd or wrapped further, and a body with any other key MUST be refused as `invalid_request`. This body is the HTTP body inside the connector's sealed envelope: the tenant seals the whole HTTP request to the provider's pinned `connector_seal_key` (§3, ADR 0011; connector ADR 0018), the connector unseals it and forwards plain HTTP, and the provider app reads the body as plaintext JSON and no payment header (§2).
-- **Verification order.** The provider verifies `id` and `sig` first (`bad_signature`), then the kind, the `p` tags and the `op` tag (`invalid_request`), then `expiration` and the window (`stale_request`), then replay (`stale_request`). This is the whole of §6.2 step 1, and every signed route runs it identically.
-- **Fixtures.** Signed Lease Requests per `op`, with their packet bodies, are in Appendix B.
+**Replay:** the Provider MUST keep the `request_id`s it has accepted until their `expiration`, and refuse repeats.
+
+#### 6.1.1 The Continuation Token
+
+A Tenant mints **one 32-byte root secret per Lease** and holds it. It never leaves the Tenant. From it, every token of that Lease derives:
+
+```
+continuation(provider) = HKDF-SHA256(ikm = root,
+                                     salt = empty,
+                                     info = "toon-network-continuation:" || provider_pubkey,
+                                     L = 32)
+```
+
+`provider_pubkey` is the Provider's public key as **64 lowercase hex characters**, so the whole `info` is ASCII and there is nothing about byte order or encoding to guess. HKDF-SHA256 is RFC 5869; an empty salt is its own default, which extracts with 32 zero bytes. The output is 32 bytes, carried on the wire as 64 lowercase hex characters. Appendix B carries a vector.
+
+Three properties follow, and they are the whole point (ADR 0016):
+
+- **Both parties hold it**, so either could produce a request bearing it. Neither can prove anything to a third party with it.
+- **No key pair makes it.** It names nobody, and it links to no other Lease.
+- **It is fresh per Lease and per Provider**, so two Leases of one Tenant share no observable value — and every member of a Standby Set holds a *different* token by construction, so one member cannot act as the Tenant against another (§7).
+
+**A Provider stores `continuation(provider)` against the Lease and nothing else about the Tenant.** It MUST persist it with the Lease across its own restarts (§6.7). It MUST NOT write it to a log, a metric or an error message: operational surfaces must not become the leak the signature was.
+
+#### 6.1.2 Validation order
+
+Every authenticated route runs the same four steps and refuses with the first that fails:
+
+1. The body parses as the shape above, `op` matches the route, and `provider` is this Provider — else `invalid_request`.
+2. `expiration` is in the future and inside the window — else `stale_request`.
+3. `request_id` is unseen — else `stale_request`.
+4. `continuation` matches the token stored against the Lease, compared in **constant time** — else `not_tenant`.
+
+A wrong token and an absent one are both `not_tenant`: a request that presents no token asserts no authority, which is exactly what a wrong one does.
+
+**A spawn skips step 4.** There is no stored token yet, so the presented one is stored against the new Lease and becomes what every later request presents. A spawn carrying no `continuation` is `invalid_request` rather than `not_tenant`: it would buy a Lease nobody could ever read, extend or stop, which is a request the Tenant must correct.
+
+**Packet body.** The request body of an authenticated route is the JSON object `{ "request": … }`: the request object above, unmodified, as the value of the single key `request`. It is not re-encoded, base64'd or wrapped further, and a body with any other key MUST be refused as `invalid_request`. This body is the HTTP body inside the connector's sealed envelope: the Tenant seals the whole HTTP request to the Provider's pinned `connector_seal_key` (§3, ADR 0011; connector ADR 0018), the connector unseals it and forwards plain HTTP, and the Provider app reads the body as plaintext JSON and no payment header (§2).
+
+**Fixtures.** A Lease Request per `op`, with its packet body, and the derivation vector, are in Appendix B.
 
 ### 6.2 Spawn
 
-**Request body** on `.spawn` or `.standby`: `{ "request": <kind 4432 event, op=spawn> }`. The request's content is JSON:
+**Request body** on `.spawn`: `{ "request": <Lease Request, op=spawn> }`; on `.standby`, the same with `op=standby` (§6.1). The request's content is JSON:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -345,11 +364,11 @@ Because an Image Registry entry's `d` is itself `<name>:<tag>` (§8.1), the coor
 **The provider MUST NOT accept** runtime flags, host mounts, device mappings or capabilities in a spawn. Capabilities come only from the listing (ADR 0004). `template` is informational: the provider parses it so it cannot arrive as an unknown field, and never acts on it.
 
 **Validation**, in order, refusing with the first failing code:
-1. The signature is valid, a `p` tag names this provider, and the request is not expired or replayed.
+1. The Lease Request passes §6.1.2: the shape, the `op` and `provider`, the window, and replay. A spawn brings the Continuation Token its Lease will keep, and there is none stored to compare it with yet.
 2. The route's listing version exists, and `volume_gb` and the ports fit the listing. On `.standby` the listing MUST also price standbys: a listing with no `standby_price` sells none and has no `.standby` route at all (§4.2, §5), so a spawn that arrives on one is refused `wrong_listing_version` — the route is not on sale here, exactly as a retired version's is not.
 3. **Role:**
-   - With no `standby_set`, the route MUST be `.spawn`, and the request MUST name no provider but this one.
-   - With a `standby_set`, this provider MUST be in the set, and every `p` tag MUST name a member of it. Index 0 MUST arrive on `.spawn`, and any other index on `.standby`.
+   - With no `standby_set`, the route MUST be `.spawn`.
+   - With a `standby_set`, this provider MUST be in the set. Index 0 MUST arrive on `.spawn`, and any other index on `.standby`. Which provider the request was for is §6.1.2 step 1's, not this step's: a Lease Request names one provider on every op.
    - A `standby_set` MUST list each member once, as a public key; a list that repeats a provider gives it two positions and so two roles.
    - Every failure of this step is `invalid_request`: the spawn is mis-addressed and the tenant must correct it, not retry it. It is still billed (ADR 0003).
 4. `workload_id` is not held by this provider for a different tenant (`workload_id_taken`).
@@ -397,34 +416,27 @@ With `role: "standby"` it answers whether a Warm Standby **would be reserved** h
 
 ### 6.5 Status (free)
 
-**Request body:** `{ "request": <kind 4432 event, op=status> }`. Content: `{ "workload_id": "…", "grant"?: <kind 30438 event> }`.
+**Request body:** `{ "request": <Lease Request, op=status> }`. Content: `{ "workload_id": "…" }`.
 
-The signer MUST be the lease's tenant (`not_tenant`), **or** a Workload Gateway a valid Gateway Grant names (below). The response has `workload_id`, `role`, `state` (§6.7), `expires_at`, `access` when present, `template` when the spawn named one (§6.2) — echoed as given, never resolved — and `takeover` once a Takeover on the workload has settled at this member (§7.1 steps 3–5): `{ "winner": "<pubkey>" }`, the member of the `standby_set` that runs the workload now. A standby that won answers it beside `state: "running"` and its `access`; one that lost answers it beside `state: "reserved"` and no `access`. So a tenant asking any member learns its role, whether a Takeover happened, and where the workload is.
+The request MUST present the Lease's Continuation Token (`not_tenant`, §6.1.2), **or** a delegation the Tenant derived from it for a Workload Gateway (below). The response has `workload_id`, `role`, `state` (§6.7), `expires_at`, `access` when present, `template` when the spawn named one (§6.2) — echoed as given, never resolved — and `takeover` once a Takeover on the workload has settled at this member (§7.1 steps 3–5): `{ "winner": "<pubkey>" }`, the member of the `standby_set` that runs the workload now. A standby that won answers it beside `state: "running"` and its `access`; one that lost answers it beside `state: "reserved"` and no `access`. So a tenant asking any member learns its role, whether a Takeover happened, and where the workload is.
 
-#### Reading with a Gateway Grant
+#### Reading with a delegation
 
-`grant` is optional and carries a whole signed Gateway Grant event (§3.1.3) as JSON. It lets a **Workload Gateway** sign a `status` with its own key and be answered what the tenant would have been answered — every field above, unchanged. A grant delegates reading this lease and nothing else. `grant` is a field of this content and of `terminate`'s (§6.6) and of no other: a termination parses it and reads it not at all, so a Workload Gateway carrying a perfectly good grant is `not_tenant` there and a grant on the tenant's own termination changes nothing; and on `.spawn`, `.extend`, `.standby.extend` and `availability` it is a field this spec does not name for those requests, so it is `invalid_request` like any other unknown field (§6.1.1) rather than something sent and dropped.
+A Tenant may let **one** Workload Gateway read this Lease without letting it do anything else, and without publishing anything. The delegation is a value **derived from the Lease's Continuation Token** rather than an event: the Tenant hands it to the gateway out of band, the gateway presents it on `status`, and the Provider recomputes it from the token it already stores — so there is no relay read, nothing stored per gateway, and no Tenant-signed event anywhere (ADR 0016).
 
-The provider checks the grant **after** the signed-route checks of §6.1.1 — signature, kind, `p` tags, `op`, window, replay — and accepts only when all of these hold:
+A delegation that does not apply is refused **`bad_grant`**: one code for every defect, so a Workload Gateway learns that its delegation does not apply and nothing about the Lease. A request that asserts no delegation at all is `not_tenant`, exactly as any other stranger's is, so the two refusals stay tellable apart.
 
-1. the grant's own `id` and `sig` verify;
-2. it is kind `30438`;
-3. its signer is **this lease's tenant**;
-4. its `d` tag and its content's `workload_id` are both the `workload_id` of the request;
-5. its content's `gateway` is the key that signed the request;
-6. `now <= expires_at`.
+A delegation admits `status` and nothing else. `terminate` requires the Lease's own token.
 
-Any failure is `bad_grant` — one code for all six, so a Workload Gateway learns that its grant does not apply and nothing about the lease. The grant is verified **from the request alone**: the provider performs no relay read and stores nothing, so ADR 0005's rule that identity comes from the signed request holds unchanged and a Hidden Provider answers a granted `status` without opening a single outbound connection (§10). A grant is **not** a replay concern — it is meant to be reused — while the request carrying it is still bound by the window and replay rules of §6.1.
-
-The provider checks only the grant it was handed, so there is **no revocation before expiry**. A tenant renews or rotates by publishing the grant again under the same `d` (§3.1.3), and a tenant that wants a Workload Gateway cut off before its grant expires respawns under a new `workload_id` — exactly how Standby Set membership is changed today (§7). Tenants should therefore choose short expiries and renew.
+> **Being specified.** The exact derivation, the request field that carries the moment it was derived for, and the branch of §6.1.2 that admits it, land with TOON_Network#58 in this milestone. Until then a Provider serves `status` to the Lease's own Continuation Token alone.
 
 ### 6.6 Termination (free)
 
-**Request body:** `{ "request": <kind 4432 event, op=terminate> }`. Content: `{ "workload_id": "…", "grant"?: <kind 30438 event> }`.
+**Request body:** `{ "request": <Lease Request, op=terminate> }`. Content: `{ "workload_id": "…" }`.
 
-The signer MUST be the lease's tenant. The provider destroys the workload or releases the reservation immediately. There is no refund.
+The request MUST present the Lease's own Continuation Token (`not_tenant`, §6.1.2). The provider destroys the workload or releases the reservation immediately. There is no refund.
 
-A termination shares `status`'s content shape, so a `grant` (§6.5) MAY be present — and is **read by nobody**. A Workload Gateway carrying a perfectly good grant is `not_tenant` here exactly as any other stranger is, and a grant on the tenant's own termination changes nothing: a grant delegates reading a lease and nothing more. On every other route — `.spawn`, `.extend`, `.standby.extend` and `availability` — `grant` is a field the spec does not name and so is `invalid_request` like any other (§6.1.1).
+A delegation is **not** enough here: it admits `status` and nothing else (§6.5), so a Workload Gateway is `not_tenant` on this route exactly as any other stranger is.
 
 It responds with `{ "workload_id", "state" }`, where `state` is `{ "ended": "termination" }` (§6.7), so a tenant needs no second call to see that its lease is over. A lease that has already ended, however it ended, is `expired` (§6.3); a workload id this provider never leased is `unknown_workload`.
 
@@ -444,14 +456,15 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 - **Expiry:** the provider MUST sweep at least every 30 s and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
 - **Eviction:** a provider MAY evict a lease for abuse, policy or maintenance. It MUST publish an Eviction Notice.
 - **Eviction Notice** (kind `4433`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tags `["x", "<workload_id>"]` and `["L", "toon.network"]` (the label every TOON Network event carries, §4). `reason` is one of `abuse` (the workload abused this provider or something reachable from it), `policy` (it broke a policy the provider states outside this protocol), `maintenance` (the provider needs the capacity back) or `other`; `message` says what happened in words; with `other` it is all a reader has to go on, so it SHOULD not be empty. A reader MUST NOT refuse a notice for a `reason` it does not know: a later version may add one.
-- **Persistence:** the provider MUST persist running leases and reservations across its own restarts.
+- **Persistence:** the provider MUST persist running leases and reservations across its own restarts, each with its Continuation Token (§6.1.1). A restart that forgot the token would leave a paid workload running that nobody could read, extend or stop.
 
 ---
 
 ## 7. Warm Standby
 
 - **Standby Set:** every lease in a Standby Set is spawned with the same `workload_id` and the same `standby_set` list. Index 0 is the primary. A provider's role comes from its position in the list.
-- **One signed spawn:** the tenant signs that spawn **once**, names every member in its `p` tags (§6.1), and sends the same bytes to each. Nothing in the request singles out a member, so a provider's role is its position together with the route the request was paid on (§6.2 step 3): the primary's spawn is bought on `.spawn` at `price`, each standby's on `.standby` at `standby_price`.
+- **One spawn content, one request per member:** the tenant sends the same spawn **content** to every member, in a request of its own for each — naming only that member in `provider`, presenting only that member's Continuation Token, and carrying the `op` its route serves (§6.1). Nothing in the content singles out a member, so a provider's role is its position together with the route the request was paid on (§6.2 step 3): the primary's spawn is bought on `.spawn` at `price`, each standby's on `.standby` at `standby_price`.
+- **A token per member:** because `continuation(provider)` derives under the member's own key (§6.1.1), every member of the set holds a different token. One member therefore cannot read, extend or terminate another member's lease, which one shared secret would have let it do.
 - **A reservation is a lease:** a Warm Standby's lease is `Reserved` from the spawn (§6.7). It holds its `workload_id` and its capacity slot, is persisted across the provider's restarts, expires on the sweep if nothing pays it, and is released by a Termination — all without the provider ever starting anything.
 - **Membership changes:** changing membership means new spawns under a new `workload_id`.
 
@@ -580,7 +593,7 @@ A lease's address is created before its workload starts and answers on the same 
 
 `hidden` is a **self-assertion**: nothing in this protocol, and nobody outside the provider, verifies that the conditions above hold. A provider's own startup gate is the only check, and it checks configuration, not behaviour. The flag hides where a provider is, not that it was paid: payments still reveal who paid whom on a public chain (ADR 0008).
 
-A Hidden Provider's workload MAY be given a public name by a Workload Gateway (§12.8). That reveals the **workload** — that it exists, and its traffic pattern, to the gateway and to whoever reaches the name — and not the provider: the gateway is an ordinary client of the per-lease `.anyone` address, and learns nothing about where the provider is that the tenant's own client would not. It is the tenant's choice to make, by publishing a Gateway Grant (§3.1.3); nothing a provider does or publishes makes it, and a provider stays hidden whether or not its tenants make it.
+A Hidden Provider's workload MAY be given a public name by a Workload Gateway (§12.8). That reveals the **workload** — that it exists, and its traffic pattern, to the gateway and to whoever reaches the name — and not the provider: the gateway is an ordinary client of the per-lease `.anyone` address, and learns nothing about where the provider is that the tenant's own client would not. It is the tenant's choice to make, by delegating `status` to a gateway (§6.5); nothing a provider does or publishes makes it, and a provider stays hidden whether or not its tenants make it.
 
 ---
 
@@ -591,7 +604,7 @@ A Hidden Provider's workload MAY be given a public name by a Workload Gateway (�
 3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger, the two-cadence settle window (measured from each standby's own announcement, so two standbys that saw the silence at different instants settle at different instants) and the five-cadence primary self-stop are first guesses.
 4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
 5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
-6. **Hostnames and TLS. Closed, 2026-09-17 (Milestone 5, #46).** They stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`, which **§12** now specifies in full — what a gateway is, how it finds its grants, the canonical hostname it derives, its error page, resolution across a Standby Set, what a forwarded request carries, a readable name, how it follows the workload through a Takeover, and a workload on a Hidden Provider. The authority it needed is the **Gateway Grant** (§3.1.3, kind `30438`), honoured by `status` (§6.5), whose `http_port` says which of a spawn's `ports` is the HTTP one — so nothing is told to a Workload Gateway out of band. ADR 0013 is *Accepted*.
+6. **Hostnames and TLS. Closed, 2026-09-17 (Milestone 5, #46).** They stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`, which **§12** now specifies in full — what a gateway is, how it is told what to serve, the canonical hostname it derives, its error page, resolution across a Standby Set, what a forwarded request carries, a readable name, how it follows the workload through a Takeover, and a workload on a Hidden Provider. The authority it needed is a **delegation of `status`** (§6.5), which also carries which of a spawn's `ports` is the HTTP one — so nothing is told to a Workload Gateway out of band. ADR 0013 is *Accepted*. Milestone 6 (#56) changes how that delegation is carried — derived from the Lease's Continuation Token rather than published as a Tenant-signed event — without reopening the decision.
 7. **Later rounds.** Reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
 
 ---
@@ -600,7 +613,9 @@ A Hidden Provider's workload MAY be given a public name by a Workload Gateway (�
 
 A **Workload Gateway** fronts a workload at a stable hostname, resolving its `workload_id` to whichever provider is currently running it (ADR 0013). It exists because the stable identifier in this protocol is the workload id and not the provider: a Standby Set shares one workload id across several providers, and a Takeover moves the workload to a different provider, with a different host and a different assigned port, with no tenant online to help (§7.1, ADR 0010). A name owned by a provider names something that can move out from under it.
 
-A gateway is an ordinary TOON app, reached through its own connector. **Nothing in §4–§10 changes for it.** It is not a party to a lease: it holds none, buys none, extends none and ends none, it pays for nothing, and it calls no paid route (§5). Its whole authority over a workload is a **Gateway Grant** (§3.1.3), and the whole of what that authority buys is reading `status` (§6.5).
+A gateway is an ordinary TOON app, reached through its own connector. **Nothing in §4–§10 changes for it.** It is not a party to a lease: it holds none, buys none, extends none and ends none, it pays for nothing, and it calls no paid route (§5). Its whole authority over a workload is a **Gateway Grant** (§6.5), and the whole of what that authority buys is reading `status` (§6.5).
+
+> **Being rewritten.** Milestone 6 ([#56](https://github.com/toon-protocol/TOON_Network/issues/56)) replaces the published, tenant-signed Gateway Grant of kind `30438` with a value derived from the Lease's Continuation Token, handed to the gateway out of band (ADR 0016). This section still describes the published grant and the relay filter that found it; TOON_Network#58, #60 and #61 replace that machinery with the derived grant, a sealed **Gateway Handover** and a **Gateway Withdrawal**. Everything else here — the canonical hostname, the error page, resolution across a Standby Set, what a forwarded request carries — is unaffected.
 
 A tenant may run its own gateway or use somebody else's. A gateway that terminates TLS **reads the traffic it fronts**; that is the cost of the name, and it is one party the tenant chooses rather than every provider the tenant happened to buy standby capacity from.
 
@@ -612,7 +627,7 @@ A gateway learns what to serve without being told. It watches, on the relays it 
 { "kinds": [30438], "#p": ["<gateway pubkey>"] }
 ```
 
-Every Gateway Grant naming this gateway carries that `p` tag (§3.1.3), so publishing the grant **is** telling the gateway: no tenant makes contact with it, registers with it or holds an account on it. A relay read is free, so watching costs a gateway nothing and buys nothing.
+Every Gateway Grant naming this gateway carries that `p` tag (§6.5), so publishing the grant **is** telling the gateway: no tenant makes contact with it, registers with it or holds an account on it. A relay read is free, so watching costs a gateway nothing and buys nothing.
 
 A relay is not trusted. A gateway MUST re-derive each event's `id` and verify its `sig`, and MUST read an event as a Gateway Grant only when it is kind `30438`, its `d` tag equals its content's `workload_id`, its `http_port` is a port, its `standby_set` is a non-empty list of pubkeys and its `expires_at` is a unix time. Anything else is not a grant: it is ignored and logged, and one malformed event MUST NOT stop the gateway serving the workloads it holds.
 
@@ -657,7 +672,7 @@ The body is the error shape of §5 — exactly the two keys `error` and `message
 | Reason | Means |
 |---|---|
 | `no_grant` | This hostname names no workload this gateway holds a grant for. |
-| `grant_expired` | The grant's `expires_at` has passed. Republishing it under the same workload id renews it (§3.1.3). |
+| `grant_expired` | The grant's `expires_at` has passed. Republishing it under the same workload id renews it (§6.5). |
 | `not_resolved` | A grant is held, but where the workload runs is not yet known. |
 | `no_running_member` | Every member of the Standby Set answered, and none of them is running the workload (§12.4). |
 | `member_unreachable` | A member that would answer for the workload told this gateway nothing: its connector could not be reached or refused the request, or the address it gave will not answer (§12.4). |
@@ -677,11 +692,11 @@ A request to a hostname the gateway holds no grant for is answered by the **gate
 2. **Every member is sent `status`** (§6.5) — all of them, and at once. Not the primary first with the others only on failure: a Takeover moves a workload with no tenant online to say so (§7.1), so the member the grant lists first is exactly the member that may no longer have it. Each request is an ordinary Lease Request (§6.1) **signed by the gateway's own key**, naming that one member in its `p` tag, with `op=status`, and carrying the whole signed Gateway Grant as its content's `grant`. `status` is free (§5): a gateway attaches no payment, holds no lease and calls no paid route, here or anywhere.
 3. **The running member is the one answering `state: "running"` with `access`.** A member answering `reserved`, `stopped` or an ending (§6.7) is simply **not the target**; that is not an error, and a Standby Set is expected to answer mostly `reserved`. Where more than one member answers `running` — a Takeover settled at two places for an instant — the member earliest in `standby_set` is taken, so two gateways holding the same grant resolve the same way.
 4. **A refusal is not an answer about the lease.** `bad_grant` says this gateway may not read the lease; `unknown_workload` says this member never held it (§5). Neither says the workload is not running here, so a refusal MUST be counted with a member that could not be reached and MUST NOT be counted as a member that answered — a gateway that told a tenant "no member is running it" on the strength of a `bad_grant` would be stating a fact about the lease that it never learned.
-5. **The target is `access.host`, and the `host_port` of the entry in `access.ports` whose `container_port` equals the grant's `http_port`.** It is **not** the first port listed and **not** `ssh_port`. A workload commonly exposes several ports and the host ports are the provider's to choose; the grant carries `http_port` precisely so that a gateway has to guess nothing (§3.1.3). A member answering `running` with no entry for that container port is not a target either.
+5. **The target is `access.host`, and the `host_port` of the entry in `access.ports` whose `container_port` equals the grant's `http_port`.** It is **not** the first port listed and **not** `ssh_port`. A workload commonly exposes several ports and the host ports are the provider's to choose; the grant carries `http_port` precisely so that a gateway has to guess nothing (§6.5). A member answering `running` with no entry for that container port is not a target either.
 
 A resolution in which every member answered about the lease and none was running is `no_running_member`; one in which a member told this gateway nothing — it was unreachable, or it refused — is `member_unreachable` (§12.3). A gateway SHOULD log which member said what, because a Standby Set answering `reserved` everywhere and a Standby Set that will tell this gateway nothing look identical from outside.
 
-**Carriage is not fixed here.** What a member must RECEIVE is the request above, in the packet body §6.1.1 defines; how it gets there is §5's question and its connector's, exactly as for any other client of a free route. A gateway that seals the request through a member's connector and a gateway that reaches a member's free `status` route directly send the same bytes and are answered the same. Nothing in this section adds a carriage requirement, and nothing in it excuses a gateway from the signature, the one `p` tag, the `op`, the window or the grant.
+**Carriage is not fixed here.** What a member must RECEIVE is the request above, in the packet body §6.1.2 defines; how it gets there is §5's question and its connector's, exactly as for any other client of a free route. A gateway that seals the request through a member's connector and a gateway that reaches a member's free `status` route directly send the same bytes and are answered the same. Nothing in this section adds a carriage requirement, and nothing in it excuses a gateway from the signature, the one `p` tag, the `op`, the window or the grant.
 
 A gateway MAY keep the target it resolved and forward to it without asking again. When it MUST ask again — a Takeover, a cadence, a grant that ran out — is §12.7.
 
@@ -699,7 +714,7 @@ A gateway MUST NOT require anything of the workload: no header the application h
 
 ### 12.6 A readable name
 
-Beside the canonical hostname, which a workload always has (§12.2), a grant MAY carry a `name` (§3.1.3), and a gateway MAY serve the workload at `<name>.<gateway domain>` as well.
+Beside the canonical hostname, which a workload always has (§12.2), a grant MAY carry a `name` (§6.5), and a gateway MAY serve the workload at `<name>.<gateway domain>` as well.
 
 A name is **first come, first served**, and served only when
 
@@ -812,4 +827,4 @@ A tenant selecting for CI matches `["t", "docker"]`, and gets a workload whose `
 
 ## Appendix B. Wire fixtures
 
-Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a signed Lease Request per `op` with its packet body (§6.1.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only. `fixtures/check.mjs` verifies the copy with no dependencies, and this repository's CI runs it on every push and pull request: it re-derives every `id`, re-signs every event from the published test keys and requires the same `sig`, rebuilds every packet body, and checks every error body against §5. Where the draft and the provider once disagreed, the fixtures' README says how each disagreement was settled; the spec text is now the normative side, and the only things the fixtures record that the spec does not fix are the ones the README lists as deliberately the provider's own (the HTTP status of a refusal, §5). Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image no source can serve. Milestone 3 adds the Warm Standby wire shapes: a Takeover event (§7.1), a Listing that prices standbys and the four paid routes it generates (§4.2, §5), and an availability request carrying `role` (§6.4); then the Standby Set roles themselves — one signed spawn answered `role: "primary"` with access at index 0 and `role: "standby"` with none at index 1, and a `status` for each, the standby's in the `reserved` state (§6.2, §6.5, §6.7); then paying a reservation — `.standby.extend` adding an interval, and the `not_standby` and `not_running` refusals (§6.3); then the Takeover settled both ways, driven through the provider's real watchdog over its fake Directory — the `status` of a standby that won, `running` with `access` and `takeover.winner`, and of one that lost, still `reserved` and naming the winner (§6.5, §7.1); and finally the primary's self-stop — the `status` of a primary that five Liveness cadences in a row failed to reach a majority of its own Relay Set, `stopped` with no `access` and everything else about the lease unchanged (§6.7, §7.1). Milestone 4 adds the Hidden Provider's two directory shapes: a Profile with `hidden: true` and no `host` key, its `connector_url` at an `.anyone` host, and a Listing carrying `["l", "hidden:true", "toon.network"]` (§4.1, §4.2, §10); then its leases — the `spawn.ok` and `status.running` of that same provider, whose `access.host` is the lease's own `.anyone` address in place of an IP, on the same `ssh_port` and `host_port`s, with no IP anywhere in either answer (§6.2, §6.5, §10). Milestone 5 adds the Gateway Grant and the reading it delegates: the grant itself, signed by the tenant and naming one gateway key of its own (§3.1.3); the `status` that gateway signs with its own key, carrying the grant inside its content and answered byte-for-byte what the tenant was answered in `status.running` (§6.5); and the `bad_grant` refusal of a grant that names this gateway and this workload and has not expired but was signed by somebody who is not the lease's tenant (§5, §6.5).
+Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a Lease Request per `op` with its packet body (§6.1), request and response bodies per route (§5, §6), one refusal per §5 error code in validation order, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only, and the tenant's "key" is a root secret rather than a key pair, since a tenant signs nothing (§6.1). `fixtures/check.mjs` verifies the copy with no dependencies, and this repository's CI runs it on every push and pull request: it re-derives every `id`, re-signs every published event from the test keys and requires the same `sig`, checks every Lease Request against §6.1's shape and recomputes its Continuation Token with Node's own HKDF, rebuilds every packet body, and checks every error body against §5. Where the draft and the provider once disagreed, the fixtures' README says how each disagreement was settled; the spec text is now the normative side, and the only things the fixtures record that the spec does not fix are the ones the README lists as deliberately the provider's own (the HTTP status of a refusal, §5). Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image no source can serve. Milestone 3 adds the Warm Standby wire shapes: a Takeover event (§7.1), a Listing that prices standbys and the four paid routes it generates (§4.2, §5), and an availability request carrying `role` (§6.4); then the Standby Set roles themselves — one spawn content answered `role: "primary"` with access at index 0 and `role: "standby"` with none at index 1, and a `status` for each, the standby's in the `reserved` state (§6.2, §6.5, §6.7); then paying a reservation — `.standby.extend` adding an interval, and the `not_standby` and `not_running` refusals (§6.3); then the Takeover settled both ways, driven through the provider's real watchdog over its fake Directory — the `status` of a standby that won, `running` with `access` and `takeover.winner`, and of one that lost, still `reserved` and naming the winner (§6.5, §7.1); and finally the primary's self-stop — the `status` of a primary that five Liveness cadences in a row failed to reach a majority of its own Relay Set, `stopped` with no `access` and everything else about the lease unchanged (§6.7, §7.1). Milestone 4 adds the Hidden Provider's two directory shapes: a Profile with `hidden: true` and no `host` key, its `connector_url` at an `.anyone` host, and a Listing carrying `["l", "hidden:true", "toon.network"]` (§4.1, §4.2, §10); then its leases — the `spawn.ok` and `status.running` of that same provider, whose `access.host` is the lease's own `.anyone` address in place of an IP, on the same `ssh_port` and `host_port`s, with no IP anywhere in either answer (§6.2, §6.5, §10). Milestone 5 added the Gateway Grant and the reading it delegates; Milestone 6 (#56) replaced that published event with a value derived from the Lease's Continuation Token, so those three files are regenerated by TOON_Network#58 and are absent until it lands. What Milestone 6's first ticket changes here is the request itself: every `lease_request.*` and every `request_body` is now a plain JSON object of §6.1's six keys, signed by nobody and presenting a Continuation Token, with a fourth op — `standby`, the request a member of a Standby Set is sent — and `continuation.vector.json` states the derivation against a fixed root secret and two provider keys, so a second implementation checks its own HKDF before it sends anything. `error.bad_signature` is gone with the signature it refused.

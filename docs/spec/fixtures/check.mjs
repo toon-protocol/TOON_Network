@@ -5,29 +5,30 @@
 //
 //   verify   every event's `id` is the SHA-256 of its NIP-01 serialization,
 //            every `sig` is a valid BIP-340 Schnorr signature over that id by
-//            `pubkey` (or invalid, for the one case that requires it), every
-//            signed request body is exactly `{ "request": <event> }`, every
-//            event is the kind its `kind_name` says, every error body is
-//            `{ error, message }` with a spec §5 code, and the routes in
-//            `routes.listing` are the ones the Listing events derive to — the
-//            paid `.spawn` and `.extend` of every Listing, plus `.standby`
-//            and `.standby.extend` at `standby_price` for exactly the
-//            Listings that carry one; a Profile that declares `hidden`
-//            carries no `host` while every Listing of that provider carries
-//            the `hidden:true` label, and no other Listing does; and a lease
-//            of a hidden provider is reached at a `.anyone` host of its own,
-//            on the same ports a public lease gets, with no IP anywhere in
-//            the answer; a Gateway Grant is signed by the tenant rather than
-//            by the gateway it names and agrees with its own `d` and `p`
-//            tags, and a `status` that carries one is signed by the GATEWAY
-//            and answered exactly what the tenant was answered, while the
-//            `bad_grant` refusal differs in exactly one thing;
+//            `pubkey`, every event is the kind its `kind_name` says, every
+//            error body is `{ error, message }` with a spec §5 code, and the
+//            routes in `routes.listing` are the ones the Listing events
+//            derive to — the paid `.spawn` and `.extend` of every Listing,
+//            plus `.standby` and `.standby.extend` at `standby_price` for
+//            exactly the Listings that carry one; a Profile that declares
+//            `hidden` carries no `host` while every Listing of that provider
+//            carries the `hidden:true` label, and no other Listing does; and
+//            a lease of a hidden provider is reached at a `.anyone` host of
+//            its own, on the same ports a public lease gets, with no IP
+//            anywhere in the answer;
+//   requests every Lease Request is a plain JSON object of exactly the six
+//            keys spec §6.1 names, signed by nobody, addressed to the one
+//            fixture provider, inside the window, with a 32-byte
+//            `request_id` and a `continuation` that is the token the
+//            fixture tenant's root secret derives for that provider —
+//            recomputed here with Node's own HKDF, so a second
+//            implementation checks its derivation against the reference's
+//            rather than against a copied constant; and every packet body is
+//            exactly `{ "request": <request> }`;
 //   produce  from the test keys in `constants.json`, every event is rebuilt
-//            from its fields — a Lease Request from its PARSED `content` and
-//            its tags — and signed with all-zero auxiliary randomness, and
-//            the result must have the same `id` and the same `sig` byte for
-//            byte; every packet body is rebuilt from the rebuilt event and
-//            must equal the fixture's.
+//            from its fields and signed with all-zero auxiliary randomness,
+//            and the result must have the same `id` and the same `sig` byte
+//            for byte.
 //
 //     node docs/spec/fixtures/check.mjs            # checks ./wire
 //     node docs/spec/fixtures/check.mjs <dir>      # checks another copy
@@ -38,7 +39,7 @@
 // signing half exists so that the fixture signatures are shown to be
 // reproducible from the published keys; real signers use fresh randomness.
 
-import { createHash } from 'node:crypto';
+import { createHash, hkdfSync } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,8 +182,7 @@ const canonical = (v) =>
 const ERROR_CODES = [
   'unknown_workload', 'wrong_listing_version', 'not_tenant', 'workload_id_taken',
   'refused_image', 'no_capacity', 'no_matching_arch', 'invalid_request',
-  'expired', 'not_standby', 'not_running', 'bad_signature', 'stale_request',
-  'bad_grant',
+  'expired', 'not_standby', 'not_running', 'stale_request', 'bad_grant',
 ];
 
 // ── the checks ──────────────────────────────────────────────────────────────
@@ -213,24 +213,18 @@ for (const who of Object.keys(constants).filter((k) => constants[k]?.secret_key)
   secretKeys[public_key] = secret_key;
 }
 
-function checkEvent(where, event, { expectValidSig = true, kindName } = {}) {
+function checkEvent(where, event, { kindName } = {}) {
   report(eventId(event) === event.id, `${where}: id is the sha256 of the NIP-01 serialization`);
-  const valid = schnorrVerify(event.pubkey, event.id, event.sig);
-  report(
-    valid === expectValidSig,
-    `${where}: BIP-340 signature ${expectValidSig ? 'verifies' : 'is invalid, as this case requires'}`,
-  );
+  report(schnorrVerify(event.pubkey, event.id, event.sig), `${where}: BIP-340 signature verifies`);
   if (kindName) {
     report(constants.kinds[kindName] === event.kind, `${where}: kind ${event.kind} is ${kindName}`);
   }
 }
 
-/** Rebuild `event` from its fields — `content` given as the PARSED object
- *  when the fixture carries one, so the string a tenant would sign is
- *  re-serialised here rather than copied — sign it with the test key its
- *  pubkey names and zero aux, and require the same `id` and `sig`. Returns
- *  the rebuilt event, or null when it could not be rebuilt. */
-function roundTrip(where, event, { content, expectSameSig = true } = {}) {
+/** Rebuild `event` from its fields, sign it with the test key its `pubkey`
+ *  names and zero aux, and require the same `id` and `sig`. Returns the
+ *  rebuilt event, or null when it could not be rebuilt. */
+function roundTrip(where, event) {
   const secret = secretKeys[event.pubkey];
   report(secret !== undefined, `${where}: signed by one of constants.json's test keys`);
   if (secret === undefined) return null;
@@ -239,18 +233,12 @@ function roundTrip(where, event, { content, expectSameSig = true } = {}) {
     created_at: event.created_at,
     kind: event.kind,
     tags: event.tags,
-    content: content === undefined ? event.content : JSON.stringify(content),
+    content: event.content,
   };
-  if (content !== undefined) {
-    report(rebuilt.content === event.content, `${where}: content re-serialises to the signed string (sorted keys, no whitespace)`);
-  }
   rebuilt.id = eventId(rebuilt);
   rebuilt.sig = schnorrSignZeroAux(secret, rebuilt.id);
   report(rebuilt.id === event.id, `${where}: rebuilt event has the same id`);
-  report(
-    (rebuilt.sig === event.sig) === expectSameSig,
-    `${where}: re-signing with zero aux gives ${expectSameSig ? 'the same sig byte for byte' : 'a different sig, since this one is tampered'}`,
-  );
+  report(rebuilt.sig === event.sig, `${where}: re-signing with zero aux gives the same sig byte for byte`);
   return rebuilt;
 }
 
@@ -273,17 +261,86 @@ const hasTag = (event, cells) =>
 const tagValue = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
 const tagValues = (event, name) => event.tags.filter((t) => t[0] === name).map((t) => t[1]);
 
-// The verifier must reject something, or every "ok" above is vacuous.
+// The verifier must reject something, or every "ok" above is vacuous. The
+// witness is a PUBLISHED event: nothing a tenant sends is signed any more
+// (spec §6.1, ADR 0016).
 {
-  const good = load('lease_request.spawn.json').event;
+  const good = load('directory.profile.json').event;
   const tampered = (good.sig[0] === '0' ? '1' : '0') + good.sig.slice(1);
   report(schnorrVerify(good.pubkey, good.id, tampered) === false, 'self-test: a tampered signature is rejected');
   report(schnorrVerify(good.pubkey, good.id, good.sig) === true, 'self-test: the untampered signature is accepted');
   // And the signer must produce something the verifier accepts, with a
   // different key giving a different signature.
-  const other = schnorrSignZeroAux(constants.other_tenant.secret_key, good.id);
-  report(schnorrVerify(constants.other_tenant.public_key, good.id, other), 'self-test: a signature this signer produces verifies');
+  const other = schnorrSignZeroAux(constants.publisher.secret_key, good.id);
+  report(schnorrVerify(constants.publisher.public_key, good.id, other), 'self-test: a signature this signer produces verifies');
   report(other !== good.sig, 'self-test: a different key gives a different signature');
+}
+
+// ── the Continuation Token (spec §6.1) ──────────────────────────────────────
+
+/** `continuation(provider) = HKDF-SHA256(ikm = root, salt = empty,
+ *  info = "toon-network-continuation:" || <provider pubkey hex>, L = 32)`,
+ *  computed from Node's own HKDF rather than copied from the fixture. */
+function continuationFor(rootSecretHex, providerPubkeyHex, infoPrefix) {
+  const okm = hkdfSync(
+    'sha256',
+    Buffer.from(rootSecretHex, 'hex'),
+    Buffer.alloc(0),
+    Buffer.from(infoPrefix + providerPubkeyHex, 'ascii'),
+    32,
+  );
+  return Buffer.from(okm).toString('hex');
+}
+
+const INFO_PREFIX = constants.continuation.derivation.match(/info = "([^"]*)"/)[1];
+const TENANT_TOKEN = continuationFor(
+  constants.tenant.root_secret,
+  constants.provider.public_key,
+  INFO_PREFIX,
+);
+
+{
+  const vector = load('continuation.vector.json');
+  report(vector.info_prefix === INFO_PREFIX, 'continuation.vector: info_prefix is the domain constants.json states');
+  report(
+    continuationFor(vector.root_secret, vector.provider_public_key, vector.info_prefix) === vector.continuation,
+    'continuation.vector: the documented derivation reproduces the token',
+  );
+  report(
+    continuationFor(vector.root_secret, vector.at_other_provider.provider_public_key, vector.info_prefix) ===
+      vector.at_other_provider.continuation,
+    'continuation.vector: the same root secret derives a DIFFERENT token at another provider',
+  );
+  report(
+    vector.continuation !== vector.at_other_provider.continuation,
+    'continuation.vector: one member of a Standby Set cannot hold another member\'s token (§7)',
+  );
+  report(
+    constants.tenant.continuation_at_provider === TENANT_TOKEN,
+    'constants: the tenant\'s published token is what its root secret derives at the fixture provider',
+  );
+}
+
+/** Every Lease Request in the fixtures, checked against §6.1's shape: six
+ *  keys, nothing signed, one provider, a 32-byte `request_id`, a window
+ *  inside the 300 s bound, and the token this tenant derives for this
+ *  provider. */
+function checkLeaseRequest(where, request) {
+  report(
+    canonical(Object.keys(request).sort()) ===
+      canonical(['content', 'continuation', 'expiration', 'op', 'provider', 'request_id']),
+    `${where}: exactly { request_id, op, provider, expiration, continuation, content }`,
+  );
+  report(!('sig' in request) && !('pubkey' in request) && !('kind' in request), `${where}: nothing here is signed`);
+  report(/^[0-9a-f]{64}$/.test(request.request_id), `${where}: request_id is 32 bytes of lowercase hex`);
+  report(['spawn', 'standby', 'status', 'terminate'].includes(request.op), `${where}: op is one of §6.1's four`);
+  report(request.provider === constants.provider.public_key, `${where}: provider names the fixture provider`);
+  report(/^[0-9a-f]{64}$/.test(request.continuation), `${where}: continuation is 32 bytes of lowercase hex`);
+  report(
+    request.expiration - constants.now <= 300,
+    `${where}: expiration is inside the 300 s request window`,
+  );
+  report(typeof request.content === 'object' && request.content !== null, `${where}: content is the op's JSON object`);
 }
 
 const files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
@@ -297,28 +354,17 @@ for (const file of files) {
   }
 
   if (surface === 'lease_request') {
+    checkLeaseRequest(`${file} request`, doc.request);
+    report(doc.request.op === kase, `${file}: op is ${kase}`);
+    report(canonical(doc.content) === canonical(doc.request.content), `${file}: content is the request's own content object`);
+    report(doc.request.continuation === TENANT_TOKEN, `${file}: presents the fixture tenant's token for this provider`);
     report(
-      JSON.stringify(doc.packet_body) === JSON.stringify({ request: doc.event }),
-      `${file}: packet_body is exactly { "request": <event> }`,
+      doc.request.expiration - constants.now === constants.lease_request_ttl_s,
+      `${file}: expiration is now + ${constants.lease_request_ttl_s}`,
     );
-    const rebuilt = roundTrip(`${file} event`, doc.event, { content: doc.content });
-    if (rebuilt) {
-      report(
-        canonical({ request: rebuilt }) === canonical(doc.packet_body),
-        `${file}: packet_body rebuilt from the rebuilt event matches`,
-      );
-      report(
-        Object.keys(doc.packet_body).length === 1 && canonical(doc.packet_body.request) === canonical(rebuilt),
-        `${file}: the rebuilt packet body has the single key request`,
-      );
-    }
-    report(doc.event.pubkey === constants.tenant.public_key, `${file}: signed by the fixture tenant`);
-    report(tagValue(doc.event, 'p') === constants.provider.public_key, `${file}: p tag names the fixture provider`);
-    report(tagValue(doc.event, 'op') === kase, `${file}: op tag is ${kase}`);
-    const expiration = Number(tagValue(doc.event, 'expiration'));
     report(
-      expiration - doc.event.created_at === constants.lease_request_ttl_s,
-      `${file}: expiration is created_at + ${constants.lease_request_ttl_s}`,
+      Object.keys(doc.packet_body).length === 1 && canonical(doc.packet_body.request) === canonical(doc.request),
+      `${file}: packet_body is exactly { "request": <request> }`,
     );
   }
 
@@ -429,23 +475,25 @@ for (const file of files) {
       `${file}: image is the spawn content's own image object`,
     );
     report(
-      doc.request_body.request.content === JSON.stringify(doc.spawn_content),
-      `${file}: spawn_content is exactly the signed event's content`,
+      canonical(doc.request_body.request.content) === canonical(doc.spawn_content),
+      `${file}: spawn_content is exactly the request's content`,
     );
   }
 
   if (doc.request_body && typeof doc.request_body === 'object' && doc.request_body.request) {
-    checkEvent(`${file} request_body.request`, doc.request_body.request, {
-      expectValidSig: kase !== 'bad_signature',
-      kindName: 'K_LEASE_REQUEST',
-    });
+    checkLeaseRequest(`${file} request_body.request`, doc.request_body.request);
     report(Object.keys(doc.request_body).length === 1, `${file}: the body has no key besides request`);
-    const rebuilt = roundTrip(`${file} request_body.request`, doc.request_body.request, {
-      expectSameSig: kase !== 'bad_signature',
-    });
-    if (rebuilt && kase !== 'bad_signature') {
-      report(canonical({ request: rebuilt }) === canonical(doc.request_body), `${file}: request_body rebuilt from the rebuilt event matches`);
-    }
+    // Every request here is one of the two fixture tenants'; `not_tenant` is
+    // the one that is the OTHER tenant's, which is the whole of what makes
+    // it a refusal.
+    const other = continuationFor(constants.other_tenant.root_secret, constants.provider.public_key, INFO_PREFIX);
+    const token = doc.request_body.request.continuation;
+    report(
+      kase === 'not_tenant' ? token === other : token === TENANT_TOKEN,
+      kase === 'not_tenant'
+        ? `${file}: presents the OTHER tenant's token, which this lease was not taken with`
+        : `${file}: presents the fixture tenant's token for this provider`,
+    );
   }
 
   // A Standby Set (spec §6.2 step 3, §7): ONE signed spawn reaches every
@@ -455,15 +503,20 @@ for (const file of files) {
   // workload; any other index is a Warm Standby, arrives on `.standby` and
   // runs nothing, which is why its answer carries no `access`.
   if (surface === 'spawn' && (kase === 'primary' || kase === 'standby')) {
-    const content = JSON.parse(doc.request_body.request.content);
+    const request = doc.request_body.request;
+    const content = request.content;
     const set = content.standby_set ?? [];
     const index = set.indexOf(constants.provider.public_key);
     report(index >= 0, `${file}: the standby_set names the fixture provider`);
     report(
-      JSON.stringify(tagValues(doc.request_body.request, 'p')) === JSON.stringify(set),
-      `${file}: one p tag per member, in the set's order`,
+      request.provider === constants.provider.public_key,
+      `${file}: the request names this member alone, whatever the set says`,
     );
     const onStandbyRoute = doc.http_path.endsWith('/standby');
+    report(
+      request.op === (onStandbyRoute ? 'standby' : 'spawn'),
+      `${file}: op is the one the ${onStandbyRoute ? '.standby' : '.spawn'} route serves`,
+    );
     report(
       kase === 'primary' ? index === 0 && !onStandbyRoute : index > 0 && onStandbyRoute,
       `${file}: index ${index} matches the ${onStandbyRoute ? '.standby' : '.spawn'} route`,
@@ -479,66 +532,6 @@ for (const file of files) {
       doc.response_body.workload_id === content.workload_id,
       `${file}: the answer names the workload id the whole set shares`,
     );
-  }
-
-  // The Gateway Grant (§3.1.3) as a tenant publishes it: addressable on the
-  // workload id, naming ONE gateway both in content and in a `p` tag so a
-  // gateway finds it with a single filter, labelled like every other
-  // published TOON Network event — and signed by the TENANT, never by a
-  // provider and never by the gateway it names.
-  if (surface === 'gateway_grant') {
-    report(doc.event.pubkey === constants.tenant.public_key, `${file}: signed by the fixture tenant, not a provider`);
-    roundTrip(`${file} event`, doc.event);
-    report(hasTag(doc.event, ['L', constants.label]), `${file}: carries ["L", "${constants.label}"]`);
-    report(tagValue(doc.event, 'd') === doc.content.workload_id, `${file}: d is the workload id`);
-    report(tagValue(doc.event, 'p') === doc.content.gateway, `${file}: the p tag names the same gateway as the content`);
-    report(doc.content.gateway === constants.gateway.public_key, `${file}: the gateway is constants.json's gateway key`);
-    report(doc.content.gateway !== doc.event.pubkey, `${file}: a gateway never signs its own grant`);
-    report(
-      Number.isInteger(doc.content.http_port) && doc.content.http_port > 0 && doc.content.http_port < 65536,
-      `${file}: http_port is a container port`,
-    );
-    report(
-      Array.isArray(doc.content.standby_set) && doc.content.standby_set.length >= 1 &&
-        doc.content.standby_set.every((k) => /^[0-9a-f]{64}$/.test(k)),
-      `${file}: standby_set is a non-empty list of pubkeys, primary first`,
-    );
-    report(doc.content.expires_at > constants.now, `${file}: expires_at is ahead of the fixture clock`);
-  }
-
-  // A `status` carrying a grant (§6.5). The GATEWAY signs the request with
-  // its own key and the grant rides inside the signed content, so the
-  // provider verifies it out of this request alone — there is nothing else
-  // in the fixture it could have read. A granted answer must be the tenant's
-  // answer unchanged; the refusal must differ in exactly one thing.
-  if ((surface === 'status' && kase === 'granted') || (surface === 'error' && kase === 'bad_grant')) {
-    const request = doc.request_body.request;
-    const content = JSON.parse(request.content);
-    report(request.pubkey === constants.gateway.public_key, `${file}: the request is signed by the gateway, not the tenant`);
-    report(
-      canonical(Object.keys(content).sort()) === canonical(['grant', 'workload_id']),
-      `${file}: the content is exactly { workload_id, grant }`,
-    );
-    checkEvent(`${file} content.grant`, content.grant, { kindName: 'K_GATEWAY_GRANT' });
-    report(content.grant.pubkey !== request.pubkey, `${file}: the grant is not self-signed by the gateway`);
-    report(tagValue(content.grant, 'd') === content.workload_id, `${file}: the grant is about the workload the request names`);
-    const granted = JSON.parse(content.grant.content);
-    report(granted.workload_id === content.workload_id, `${file}: the grant's content names that workload too`);
-    report(granted.gateway === request.pubkey, `${file}: the grant names the request's signer as its gateway`);
-    report(granted.expires_at > request.created_at, `${file}: the grant had not expired when the request was signed`);
-    if (kase === 'granted') {
-      report(content.grant.pubkey === constants.tenant.public_key, `${file}: the grant is signed by the lease's tenant`);
-      report(canonical(content.grant) === canonical(load('gateway_grant.json').event), `${file}: the grant is gateway_grant.json unchanged`);
-      report(
-        canonical(doc.response_body) === canonical(load('status.running.json').response_body),
-        `${file}: the answer is exactly what the tenant was answered in status.running`,
-      );
-    } else {
-      // Everything above passed, so the ONE thing wrong with this grant is
-      // its signer — which is what makes it a delegation and not a bearer
-      // credential anybody may mint.
-      report(content.grant.pubkey === constants.other_tenant.public_key, `${file}: the defect is the signer: not this lease's tenant`);
-    }
   }
 
   if (surface === 'error') {
