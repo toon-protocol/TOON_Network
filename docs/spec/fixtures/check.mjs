@@ -25,7 +25,7 @@
 //            implementation checks its derivation against the reference's
 //            rather than against a copied constant; a request that asserts a
 //            `gateway_expires_at` presents instead the Gateway Grant that
-//            token derives for that moment (§6.5), recomputed the same way,
+//            token derives for that moment (§6.5.1), recomputed the same way,
 //            and is answered exactly what the tenant was answered; and every
 //            packet body is exactly `{ "request": <request> }`;
 //   produce  from the test keys in `constants.json`, every event is rebuilt
@@ -296,7 +296,7 @@ function continuationFor(rootSecretHex, providerPubkeyHex, infoPrefix) {
 }
 
 /** `gateway_sub(provider, expires_at) = HKDF-SHA256(continuation(provider),
- *  "toon-network-gateway:" || expires_at)` (spec §6.5), with `expires_at` as
+ *  "toon-network-gateway:" || expires_at)` (spec §6.5.1), with `expires_at` as
  *  unpadded decimal unix seconds. Node's own HKDF again, over the LEASE'S
  *  TOKEN rather than the tenant's root secret: a provider holds the token
  *  and not the root, which is how it recomputes a grant it was handed. */
@@ -361,7 +361,7 @@ const TENANT_TOKEN = continuationFor(
   );
   report(
     vector.gateway_sub !== vector.at_the_next_second.gateway_sub,
-    'gateway_sub.vector: a grant is bound to the one moment it names, so rotation is re-derivation (§6.5)',
+    'gateway_sub.vector: a grant is bound to the one moment it names, so rotation is re-derivation (§6.5.1)',
   );
   report(
     vector.gateway_sub !== vector.continuation,
@@ -546,13 +546,16 @@ for (const file of files) {
           : `${file}: presents the fixture tenant's token for this provider`,
       );
     } else {
-      // A WORKLOAD GATEWAY's request (spec §6.5): the value in `continuation`
+      // A WORKLOAD GATEWAY's request (spec §6.5.1): the value in `continuation`
       // is a Gateway Grant, and `gateway_expires_at` says which moment to
       // recompute it at. The field is named by `status` content and by
       // nothing else, which is why a gateway cannot reach `terminate` with
       // it at all.
       report(request.op === 'status', `${file}: gateway_expires_at is named by status content alone`);
-      report(asserted > constants.now, `${file}: the moment the request asserts has not passed`);
+      // `now <= gateway_expires_at` admits the moment itself (§6.5.1 step 2):
+      // `expires_at` is the last second a grant is good for, not the first
+      // it is not.
+      report(asserted >= constants.now, `${file}: the moment the request asserts has not passed`);
       const grant = gatewaySubFor(TENANT_TOKEN, asserted, GATEWAY_INFO_PREFIX);
       report(
         kase === 'bad_grant' ? token !== grant : token === grant,
@@ -575,7 +578,7 @@ for (const file of files) {
 
   // A grant delegates READING a lease, so the answer is the answer either
   // way: what the gateway is told is byte for byte what the tenant was told
-  // in `status.running` (§6.5).
+  // in `status.running` (§6.5.1).
   if (surface === 'status' && kase === 'delegated') {
     report(
       canonical(doc.response_body) === canonical(load('status.running.json').response_body),

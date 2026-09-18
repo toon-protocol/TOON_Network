@@ -330,7 +330,6 @@ A wrong token and an absent one are both `not_tenant`: a request that presents n
 **Step 4 branches on `status` alone.** A request there MAY instead present a Gateway Grant derived from the lease's token and name the moment it was derived for, and §6.5.1 gives the order that admits one and the refusal it earns. No other route has that branch.
 
 
-
 **A spawn skips step 4.** There is no stored token yet, so the presented one is stored against the new lease and becomes what every later request presents. A spawn carrying no `continuation` is `invalid_request` rather than `not_tenant`: it would buy a lease nobody could ever read, extend or stop, which is a request the tenant must correct.
 
 **Packet body.** The request body of an authenticated route is the JSON object `{ "request": … }`: the request object above, unmodified, as the value of the single key `request`. It is not re-encoded, base64'd or wrapped further, and a body with any other key MUST be refused as `invalid_request`. This body is the HTTP body inside the connector's sealed envelope: the tenant seals the whole HTTP request to the provider's pinned `connector_seal_key` (§3, ADR 0011; connector ADR 0018), the connector unseals it and forwards plain HTTP, and the provider app reads the body as plaintext JSON and no payment header (§2).
@@ -460,7 +459,7 @@ One code covers every way a delegation can fail: derived for another moment, der
 
 **What it admits.** `status`, and nothing else. `terminate` requires the lease's own token (§6.6), and the shape is what says so rather than a rule: a `terminate` carrying `gateway_expires_at` is `invalid_request`, and one without it presents a value that is not the lease's token, which is `not_tenant`.
 
-**Rotation and revocation.** Rotation is re-derivation at a new `expires_at`: the tenant derives a second value and hands it over (§12), and the one it replaces keeps working until its own moment passes. Nothing moves, nothing is published, and the provider is not told. **There is no revocation before expiry**, exactly as there is none for a Continuation Token: a tenant that wants a gateway cut off sooner waits for the grant's moment to pass, so a tenant SHOULD derive grants for the shortest `expires_at` it can live with and hand out new ones. Rotating the lease's own token — which would end every grant derived from it at once — is a later milestone.
+**Rotation, and no revocation.** Rotation is re-derivation at a new `expires_at`: the tenant derives a second value and hands it over (§12), and the one it replaces keeps working until its own moment passes. Nothing moves, nothing is published, and the provider is not told. **There is no revocation before expiry**, exactly as there is none for a Continuation Token: a tenant that wants a gateway cut off sooner waits for the grant's moment to pass, so a tenant SHOULD derive grants for the shortest `expires_at` it can live with and hand out new ones. Rotating the lease's own token — which would end every grant derived from it at once — is a later milestone.
 
 ### 6.6 Termination (free)
 

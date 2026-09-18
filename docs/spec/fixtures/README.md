@@ -114,7 +114,7 @@ A fourth shape — `reference` together with `registry_entry`, a `digest` that i
 | 10 | `error.expired.json` | 409 | Extension of a terminated lease (`expired` covers every ending, §6.3) | §6.3 |
 | 11 | `error.not_standby.json` | 409 | `.standby.extend` paid for a running lease (standalone here) | §6.3 |
 | 12 | `error.not_running.json` | 409 | `.extend` paid for a Warm Standby reservation — the mirror of #11, and #30's own choice of code (spec §6.3 names no other that fits) | §6.3 |
-| 13 | `error.bad_grant.json` | 403 | Status asserting a `gateway_expires_at` that has not passed, presenting a well-formed Gateway Grant of the *other* tenant's token. Every delegation defect is this one code (§6.5.1) | §6.1.2 step 4, `status` branch |
+| 13 | `error.bad_grant.json` | 403 | Status asserting a `gateway_expires_at` that has not passed, presenting a well-formed Gateway Grant of the *other* tenant's token. Every delegation defect is this one code (§6.5.1) | §6.5.1 step 3 |
 Two of these codes also answer a mis-addressed Standby Set spawn: `invalid_request` for every role failure of §6.2 step 3, and `wrong_listing_version` for a `.standby` spawn on a listing that prices no standby. See *Warm Standby* below.
 
 The error table above is every §5 code. **`bad_grant`** and **`not_tenant`** are the pair worth reading together: they are the same lease, the same route and two values that are both wrong for it, and what tells them apart is not the defect but whether the request *asserted* a delegation — `gateway_expires_at` present is `bad_grant`, absent is `not_tenant` (§6.5.1).
