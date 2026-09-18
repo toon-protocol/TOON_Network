@@ -11,8 +11,8 @@ An operator who sells leases on workloads running on hardware they control.
 _Avoid_: Host, seller, node
 
 **Tenant**:
-The Nostr identity a lease belongs to.
-_Avoid_: Consumer, buyer, customer, user
+The holder of a lease's continuation token. A tenant has no published identity and signs nothing.
+_Avoid_: Consumer, buyer, customer, user, tenant key
 
 **Payer**:
 The channel identity a payment was collected from. A payer need not be the tenant.
@@ -27,6 +27,10 @@ _Avoid_: Pod, container, VM, box
 **Lease**:
 A tenant's prepaid right to one workload on one provider, until it expires.
 _Avoid_: Rental, job, subscription
+
+**Continuation Token**:
+The secret a tenant mints for a lease and presents on every later request, by which a provider knows the same party that took the lease is asking again.
+_Avoid_: Session token, API key, bearer token, password, tenant secret
 
 **Lease Interval**:
 The fixed period of a lease that one payment buys, set by the listing.
@@ -138,6 +142,16 @@ _Avoid_: Preset, app
 A tenant's signed statement that one environment of one repository is currently served by a lease. Only a tenant signs one, and a provider neither publishes nor reads it.
 _Avoid_: Release, rollout, environment record
 
+### Gateway delegation
+
 **Gateway Grant**:
-A tenant's signed, published delegation that lets one Workload Gateway read a workload's lease state and access details until the grant expires.
+A tenant's delegation of reading one workload's lease state and access details until it expires, derived from that lease's continuation token.
 _Avoid_: Token, API key, delegation certificate
+
+**Gateway Handover**:
+The message by which a tenant chooses a workload gateway, carrying the workload's gateway grant and what the gateway needs to serve it.
+_Avoid_: Registration, enrolment, onboarding, grant publication
+
+**Gateway Withdrawal**:
+The message by which a tenant stops a workload gateway serving a workload, which ends its serving but not its grant.
+_Avoid_: Revocation, deregistration, cancellation
