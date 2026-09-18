@@ -23,8 +23,11 @@
 //            fixture tenant's root secret derives for that provider —
 //            recomputed here with Node's own HKDF, so a second
 //            implementation checks its derivation against the reference's
-//            rather than against a copied constant; and every packet body is
-//            exactly `{ "request": <request> }`;
+//            rather than against a copied constant; a request that asserts a
+//            `gateway_expires_at` presents instead the Gateway Grant that
+//            token derives for that moment (§6.5), recomputed the same way,
+//            and is answered exactly what the tenant was answered; and every
+//            packet body is exactly `{ "request": <request> }`;
 //   produce  from the test keys in `constants.json`, every event is rebuilt
 //            from its fields and signed with all-zero auxiliary randomness,
 //            and the result must have the same `id` and the same `sig` byte
@@ -292,7 +295,24 @@ function continuationFor(rootSecretHex, providerPubkeyHex, infoPrefix) {
   return Buffer.from(okm).toString('hex');
 }
 
+/** `gateway_sub(provider, expires_at) = HKDF-SHA256(continuation(provider),
+ *  "toon-network-gateway:" || expires_at)` (spec §6.5), with `expires_at` as
+ *  unpadded decimal unix seconds. Node's own HKDF again, over the LEASE'S
+ *  TOKEN rather than the tenant's root secret: a provider holds the token
+ *  and not the root, which is how it recomputes a grant it was handed. */
+function gatewaySubFor(continuationHex, expiresAt, infoPrefix) {
+  const okm = hkdfSync(
+    'sha256',
+    Buffer.from(continuationHex, 'hex'),
+    Buffer.alloc(0),
+    Buffer.from(infoPrefix + String(expiresAt), 'ascii'),
+    32,
+  );
+  return Buffer.from(okm).toString('hex');
+}
+
 const INFO_PREFIX = load('continuation.vector.json').info_prefix;
+const GATEWAY_INFO_PREFIX = load('gateway_sub.vector.json').info_prefix;
 const TENANT_TOKEN = continuationFor(
   constants.tenant.root_secret,
   constants.provider.public_key,
@@ -321,6 +341,31 @@ const TENANT_TOKEN = continuationFor(
   report(
     constants.tenant.continuation_at_provider === TENANT_TOKEN,
     'constants: the tenant\'s published token is what its root secret derives at the fixture provider',
+  );
+}
+
+{
+  const vector = load('gateway_sub.vector.json');
+  report(
+    vector.continuation === TENANT_TOKEN,
+    'gateway_sub.vector: the grant is derived from the token the fixture tenant holds here',
+  );
+  report(
+    gatewaySubFor(vector.continuation, vector.expires_at, vector.info_prefix) === vector.gateway_sub,
+    'gateway_sub.vector: the documented derivation reproduces the grant',
+  );
+  report(
+    gatewaySubFor(vector.continuation, vector.at_the_next_second.expires_at, vector.info_prefix) ===
+      vector.at_the_next_second.gateway_sub,
+    'gateway_sub.vector: the same token one second later derives the second grant',
+  );
+  report(
+    vector.gateway_sub !== vector.at_the_next_second.gateway_sub,
+    'gateway_sub.vector: a grant is bound to the one moment it names, so rotation is re-derivation (§6.5)',
+  );
+  report(
+    vector.gateway_sub !== vector.continuation,
+    'gateway_sub.vector: a grant is not the token it came from — it delegates reading, never the lease',
   );
 }
 
@@ -490,12 +535,51 @@ for (const file of files) {
     // the one that is the OTHER tenant's, which is the whole of what makes
     // it a refusal.
     const other = continuationFor(constants.other_tenant.root_secret, constants.provider.public_key, INFO_PREFIX);
-    const token = doc.request_body.request.continuation;
+    const request = doc.request_body.request;
+    const token = request.continuation;
+    const asserted = request.content?.gateway_expires_at;
+    if (asserted === undefined) {
+      report(
+        kase === 'not_tenant' ? token === other : token === TENANT_TOKEN,
+        kase === 'not_tenant'
+          ? `${file}: presents the OTHER tenant's token, which this lease was not taken with`
+          : `${file}: presents the fixture tenant's token for this provider`,
+      );
+    } else {
+      // A WORKLOAD GATEWAY's request (spec §6.5): the value in `continuation`
+      // is a Gateway Grant, and `gateway_expires_at` says which moment to
+      // recompute it at. The field is named by `status` content and by
+      // nothing else, which is why a gateway cannot reach `terminate` with
+      // it at all.
+      report(request.op === 'status', `${file}: gateway_expires_at is named by status content alone`);
+      report(asserted > constants.now, `${file}: the moment the request asserts has not passed`);
+      const grant = gatewaySubFor(TENANT_TOKEN, asserted, GATEWAY_INFO_PREFIX);
+      report(
+        kase === 'bad_grant' ? token !== grant : token === grant,
+        kase === 'bad_grant'
+          ? `${file}: presents a value that is NOT the grant this lease's token derives for that moment`
+          : `${file}: presents the Gateway Grant this lease's token derives for that moment`,
+      );
+      if (kase === 'bad_grant') {
+        // Well formed, unexpired, and derived from a token this lease was
+        // not taken with: the defect is not the shape, and the refusal is
+        // `bad_grant` because the request ASSERTED a delegation — the same
+        // value asserting none would hear `not_tenant`.
+        report(
+          token === gatewaySubFor(other, asserted, GATEWAY_INFO_PREFIX),
+          `${file}: it is the OTHER tenant's own grant, which delegates nothing here`,
+        );
+      }
+    }
+  }
+
+  // A grant delegates READING a lease, so the answer is the answer either
+  // way: what the gateway is told is byte for byte what the tenant was told
+  // in `status.running` (§6.5).
+  if (surface === 'status' && kase === 'delegated') {
     report(
-      kase === 'not_tenant' ? token === other : token === TENANT_TOKEN,
-      kase === 'not_tenant'
-        ? `${file}: presents the OTHER tenant's token, which this lease was not taken with`
-        : `${file}: presents the fixture tenant's token for this provider`,
+      canonical(doc.response_body) === canonical(load('status.running.json').response_body),
+      `${file}: answered exactly what the tenant's own status was answered`,
     );
   }
 
