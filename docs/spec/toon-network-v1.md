@@ -644,35 +644,84 @@ A Hidden Provider's workload MAY be given a public name by a Workload Gateway (�
 
 A **Workload Gateway** fronts a workload at a stable hostname, resolving its `workload_id` to whichever provider is currently running it (ADR 0013). It exists because the stable identifier in this protocol is the workload id and not the provider: a Standby Set shares one workload id across several providers, and a Takeover moves the workload to a different provider, with a different host and a different assigned port, with no tenant online to help (§7.1, ADR 0010). A name owned by a provider names something that can move out from under it.
 
-A gateway is an ordinary TOON app, reached through its own connector. **Nothing in §4–§10 changes for it.** It is not a party to a lease: it holds none, buys none, extends none and ends none, it pays for nothing, and it calls no paid route (§5). Its whole authority over a workload is a **Gateway Grant** (§6.5), and the whole of what that authority buys is reading `status` (§6.5).
-
-> **Being rewritten.** Milestone 6 ([#56](https://github.com/toon-protocol/TOON_Network/issues/56)) replaces the published, tenant-signed Gateway Grant of kind `30438` with a value derived from the lease's Continuation Token, handed to the gateway out of band (ADR 0016). TOON_Network#58, #60 and #61 replace that machinery with the derived grant, a sealed **Gateway Handover** and a **Gateway Withdrawal**. Until they land, this section still describes the removed event: every mention below of kind `30438`, of a grant's `d` or `p` tag, and of finding or renewing a grant on a relay, is that event, and the `§6.5` beside them points at the delegation they carry rather than at the shape they describe. Everything else here — the canonical hostname, the error page, resolution across a Standby Set, what a forwarded request carries — is unaffected.
+A gateway is an ordinary TOON app, reached through its own connector. **Nothing in §4–§10 changes for it.** It is not a party to a lease: it holds none, buys none, extends none and ends none, it pays for nothing, and it calls no paid route (§5). It signs nothing and publishes nothing, so it needs no key of its own at all. Its whole authority over a workload is a **Gateway Grant** (§6.5.1), and the whole of what that authority buys is reading `status` (§6.5).
 
 A tenant may run its own gateway or use somebody else's. A gateway that terminates TLS **reads the traffic it fronts**; that is the cost of the name, and it is one party the tenant chooses rather than every provider the tenant happened to buy standby capacity from.
 
-### 12.1 Finding its grants
+### 12.1 Being handed a workload
 
-A gateway learns what to serve without being told. It watches, on the relays it is configured with, **one** filter:
+A gateway learns what to serve in **one sealed packet**. A tenant seals a **Gateway Handover** to the gateway's connector, exactly as it seals a Lease Request to a provider's (§6.1.2, ADR 0011): the connector unseals the envelope and forwards plain HTTP, and the gateway reads the body as plaintext JSON. The body is `{ "handover": … }` — that key and no other:
 
 ```json
-{ "kinds": [30438], "#p": ["<gateway pubkey>"] }
+{
+  "handover": {
+    "workload_id": "…",
+    "standby_set": [ { "provider": "<pubkey, hex>", "grant": "<32 bytes, hex>" }, … ],
+    "http_port":   <container port>,
+    "expires_at":  <unix seconds>,
+    "name":        "<one DNS label, optional>"
+  }
+}
 ```
 
-Every Gateway Grant naming this gateway carries that `p` tag (§6.5), so publishing the grant **is** telling the gateway: no tenant makes contact with it, registers with it or holds an account on it. A relay read is free, so watching costs a gateway nothing and buys nothing.
+- **`standby_set`** is the lease's Standby Set in its own order, **primary first** (§7), and every member carries the Gateway Grant derived **for its own key** (§6.5.1). One value per member is not redundancy: `gateway_sub` derives from `continuation(provider)`, which derives under that member's key, so a single value would admit the gateway at exactly one member while §12.4 asks all of them. They share the one `expires_at`, which is what makes rotating them a single act.
+- **`http_port`** is which of the spawn's container ports is the HTTP one (§12.4 step 5). The tenant chose it and a provider reads it never, so nowhere but the handover can carry it.
+- **`expires_at`** is the moment those grants were derived for, and the moment the workload stops being served at (§12.3, §12.7).
+- **`name`** is a readable hostname to serve the workload at besides its canonical one (§12.6).
+- A field this specification does not name MUST be refused, never dropped (ADR 0004).
 
-A relay is not trusted. A gateway MUST re-derive each event's `id` and verify its `sig`, and MUST read an event as a Gateway Grant only when it is kind `30438`, its `d` tag equals its content's `workload_id`, its `http_port` is a port, its `standby_set` is a non-empty list of pubkeys and its `expires_at` is a unix time. Anything else is not a grant: it is ignored and logged, and one malformed event MUST NOT stop the gateway serving the workloads it holds.
+Nothing here is signed and nothing is published, so **there is nothing to find on a relay and nothing to verify**. A gateway reads a relay on a workload's account for exactly two things, both of them downstream of a handover it has already accepted: the Provider Profiles of the members that handover names (§12.4) and the Takeovers that move the workload between them (§12.7).
 
-Whether a grant is **this** gateway's is a separate question from whether it is a grant, and is answered by its `gateway` field. A gateway serves only a grant naming its own key — and it must still read the others, because the newest grant for a workload is what decides, whoever it names.
+**Anyone can seal a handover.** The envelope is unauthenticated by design, so that a receiver can fabricate one "from" anybody (ADR 0011; connector ADR 0018). That is not a weakness to be patched here; it is the premise of what follows.
+
+#### Admission
+
+Milestone 5 said that a grant handed over by a request MUST NOT put a workload on a hostname, because publishing was what a tenant did to choose a gateway and being sent something was not. Nothing is published now, so that rule has nothing left to protect. It is **replaced**, not deleted, and the replacement is empirical:
+
+> A handover MUST NOT put a workload on a hostname until **one round of `status` to the members it names has been accepted by at least one of them**. A gateway MUST make that round **immediately**, and MUST make **at most one**. A handover no member accepts MUST be refused, logged and **dropped**: it is not retried, not queued and not remembered.
+
+**Not remembered** is meant literally, and it is where an implementation is most likely to go wrong. A round has to look up the members it is about before it can ask them — their Provider Profiles, off the relays — and a handover names whoever its sender liked. So whatever a gateway holds in order to make the round MUST be let go of when the round refuses it, or one sealed packet would grow what the process watches, for free and for the life of the process. What a gateway holds after a refused handover is exactly what it held before it.
+
+Being sent something is proof here precisely because **only the holder of the lease's Continuation Token can derive a grant a provider will accept** (§6.5.1). A gateway is not weighing who sent the packet — it cannot, and it does not need to. It is asking the only parties that can answer whether the grant is real.
+
+The round is §12.4's round and nothing else: each member is sent `status` presenting the grant the handover carries for it, all of them at once, bounded by whatever a gateway bounds a tenant's first request by. A member that answers **about the lease** has accepted the grant, whatever it says about the workload — `reserved`, `stopped` and an ending are acceptances, because a member that read the lease to answer them read it with this grant. A refusal (`bad_grant`, `unknown_workload`) and silence are not acceptances, exactly as §12.4 step 4 keeps them apart. **One acceptance is enough**, because a grant a member took is a grant its tenant derived.
+
+Before that round and without asking anybody, a gateway MUST refuse a handover whose `expires_at` has passed: it MUST NOT carry an expired grant to a provider (§12.7), and such a handover could put the workload nowhere in any case.
+
+**What a gateway answers a handover.** A handover it admitted is answered `{ "workload_id", "hostname", "expires_at" }`: the hostname is the canonical one of §12.2, which the tenant can derive itself and is told so that nothing has to be assembled from two places. A handover it refused is answered the error shape of §5 — exactly the two keys `error` and `message`:
+
+| Code | Means |
+|---|---|
+| `invalid_handover` | It is not a handover: a field this specification does not name, or one of them malformed. Nothing was asked. |
+| `grant_expired` | Its `expires_at` has passed, so no member would take the grant. Nothing was asked. |
+| `rate_limited` | This gateway will not ask one of the members named just now (below). Nothing was asked. |
+| `not_admitted` | The round was made and no member accepted the grant. The handover was dropped. |
+| `no_proxy` | A member it names is at an `.anyone` address this gateway has no anon client to reach (§12.8). Nothing was dialled. |
+| `admission_failed` | This gateway could not carry out a round at all. Nothing was decided about the grant. |
+
+`not_admitted`, `no_proxy` and `admission_failed` MUST NOT be collapsed into one another, for the reason §12.3 keeps `no_proxy` apart from every other reason: the first is a fact about the grant, the second and third about this gateway, and a tenant acts on them differently — only the first is a reason to go and derive another grant. A reader MUST NOT refuse a code it does not know. A gateway MUST NOT put a grant, whole or in part, into any of those answers or into anything it logs: the grant is a secret on the same terms as the Continuation Token it derives from (§6.1.1).
+
+**The amplification ratio, and why the rate limit is normative.** Anyone can seal a handover naming any provider, so one sealed packet the sender paid to deliver buys one free `status` to each member it names — a ratio of **about one to one** for an ordinary lease. A gateway is therefore a small reflector unless it bounds that, and so:
+
+- it MUST rate-limit admission **per member named**, so that a burst of unsolicited handovers cannot make it exceed that rate against any one provider, however the burst is spread across workloads or senders;
+- it MUST bound how many members it will ask from one handover, so that the ratio cannot be raised by naming a thousand providers in one packet;
+- a handover it will not ask about MUST be refused with **nothing sent to anybody**.
+
+The rate is a gateway's own to choose. What is not optional is that there is one, and that it is counted per member rather than per handover.
+
+**A gateway cannot allowlist tenants.** There is no tenant identity to put on a list: nothing a tenant produces is signed, nothing is published, and the envelope authenticates nobody. **This is a consequence of the design and not an oversight** — it is the same property that keeps a provider from proving who asked it to run anything (ADR 0016) — and a gateway that wants to serve only certain workloads must decide that some other way, out of band. What a gateway *can* bound is the work one packet buys, which is what the rules above bound.
+
+#### What a handover changes once it is admitted
+
+A gateway holds at most **one** grant per workload, and a later handover **admission accepted** replaces the one held. Nothing is weighed to decide which of two is current — there is no `created_at` to compare and no signature to weigh — because getting past admission is already the proof that its sender may replace what is held. Renewal, rotation of the grant's moment and a change of Standby Set are therefore all the same act, and all take effect with no restart and no operator action:
+
+- a handover with a further `expires_at` renews (§6.5.1's rotation, from the gateway's side);
+- a handover naming a different Standby Set moves the workload's members;
+- a grant that reaches its `expires_at` stops being served (§12.3), and starts again by itself when its tenant hands over one derived for a later moment.
 
 `name` is the one field a defect does not cost the grant: an absent or unusable `name` MUST leave the workload served at its canonical hostname (§12.2), because that is the name a tenant can always derive. A gateway logs the defect and drops the name. What a usable one is served at is §12.6.
 
-A grant is addressable on the workload id, so there is at most **one** grant per workload and a later one **replaces** the one held — the later `created_at`, and on a tie the lower `id`, exactly as a relay replaces a replaceable event. A gateway MUST apply that rule to the newest grant it has **seen** for a workload rather than to the one it is serving: several relays carry the same grant, so an earlier grant arriving again after a later one is ordinary and MUST change nothing. Renewal, rotation and a change of Standby Set are therefore the same act as publishing, and all take effect with no restart and no operator action:
-
-- a later grant with a further `expires_at` renews;
-- a later grant naming a **different** gateway withdraws the workload from this one, which MUST stop serving it. Such a grant names the other gateway in its `p` tag, so the filter above does not carry it; how a gateway comes to see one, and which signer may replace a grant, is §12.7;
-- a grant that reaches its `expires_at` stops being served (§12.3), and starts again by itself if its tenant republishes.
-
-A gateway serves only grants it found this way. A grant handed to it by a request — anyone can send one — MUST NOT put a workload on a hostname, because publishing is what a tenant does to choose a gateway and being sent something is not.
+A handover that is not the shape above puts no workload anywhere, and one malformed packet MUST NOT stop the gateway serving the workloads it holds.
 
 ### 12.2 The canonical hostname
 
@@ -690,7 +739,7 @@ label        vkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkva
 served at    https://vkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkva.<gateway domain>/
 ```
 
-The label is **derived, never assigned**: a tenant computes it from the workload id it chose, two gateways holding the same grant serve the same label, and a Takeover changes nothing about the name. A gateway matches the `Host` of a request case-insensitively, ignoring a port and a trailing dot, and only as **one** label under its own domain: a deeper name, the bare domain, an address and a name under another domain are all hostnames it holds no grant for.
+The label is **derived, never assigned**: a tenant computes it from the workload id it chose, two gateways handed the same workload serve the same label, and a Takeover changes nothing about the name. A gateway matches the `Host` of a request case-insensitively, ignoring a port and a trailing dot, and only as **one** label under its own domain: a deeper name, the bare domain, an address and a name under another domain are all hostnames it holds no grant for.
 
 **TLS is terminated at the gateway**, for the gateway's own domain, with the gateway's own certificate. A workload is therefore reachable over HTTPS while holding no certificate itself, and no provider ever owns a domain, runs ACME or holds a tenant's certificate key (§9, ADR 0013). A gateway MAY additionally offer a plain-HTTP listener; that is a deployment choice and not part of this protocol.
 
@@ -703,7 +752,7 @@ The body is the error shape of §5 — exactly the two keys `error` and `message
 | Reason | Means |
 |---|---|
 | `no_grant` | This hostname names no workload this gateway holds a grant for. |
-| `grant_expired` | The grant's `expires_at` has passed. Republishing it under the same workload id renews it (§6.5). |
+| `grant_expired` | The grant's `expires_at` has passed. Handing over one derived for a later moment renews it (§6.5.1, §12.1). |
 | `not_resolved` | A grant is held, but where the workload runs is not yet known. |
 | `no_running_member` | Every member of the Standby Set answered, and none of them is running the workload (§12.4). |
 | `member_unreachable` | A member that would answer for the workload told this gateway nothing: its connector could not be reached or refused the request, or the address it gave will not answer (§12.4). |
@@ -713,21 +762,23 @@ The body is the error shape of §5 — exactly the two keys `error` and `message
 
 A reader MUST NOT refuse a reason it does not know: later rounds add reasons, exactly as the Eviction Notice's `reason` does (§6.7).
 
-A request to a hostname the gateway holds no grant for is answered by the **gateway itself** and MUST reach no provider and no workload: nothing is dialled, no `status` is sent, and no relay is read on its account. A gateway is not a probe, and an unknown hostname must not become one.
+A request to a hostname the gateway holds no grant for is answered by the **gateway itself** and MUST reach no provider and no workload: nothing is dialled, no `status` is sent, and no relay is read on its account. A gateway is not a probe, and an unknown hostname must not become one. The one thing that does make a gateway send a `status` about a workload it holds nothing for is an admission round, and §12.1 bounds that.
+
+These reasons are what a gateway says at a **hostname**. What it says to a tenant that sent it a handover is a separate, smaller vocabulary, in the same shape (§12.1).
 
 ### 12.4 Resolving a workload across its Standby Set
 
-**Resolution follows the grant and nothing else.** The grant names the Standby Set; nothing a provider says, and nothing a request carries, adds a member to it or removes one. For each workload a gateway holds a grant for:
+**Resolution follows the handover and nothing else.** The handover names the Standby Set; nothing a provider says, and nothing a request carries, adds a member to it or removes one. For each workload a gateway holds a grant for:
 
 1. **Each member's Provider Profile** (§4.1) gives that member's `connector_url` — the only place a gateway may ask it anything — and its Relay Set. A gateway looks on the relays it is configured with, and SHOULD then also watch the relays a Profile itself names: a provider publishes its Profile to its **own** Relay Set (§4), which a gateway need not be configured with, and a member whose Profile cannot be found is a member that cannot be reached.
-2. **Every member is sent `status`** (§6.5) — all of them, and at once. Not the primary first with the others only on failure: a Takeover moves a workload with no tenant online to say so (§7.1), so the member the grant lists first is exactly the member that may no longer have it. Each request is an ordinary Lease Request (§6.1) **signed by the gateway's own key**, naming that one member in its `p` tag, with `op=status`, and carrying the whole signed Gateway Grant as its content's `grant`. `status` is free (§5): a gateway attaches no payment, holds no lease and calls no paid route, here or anywhere.
+2. **Every member is sent `status`** (§6.5) — all of them, and at once. Not the primary first with the others only on failure: a Takeover moves a workload with no tenant online to say so (§7.1), so the member the handover lists first is exactly the member that may no longer have it. Each request is an ordinary Lease Request (§6.1) that **nobody signs**, naming that one member in `provider`, with `op=status`, presenting **that member's own Gateway Grant** as its `continuation` and the handover's `expires_at` as its content's `gateway_expires_at` (§6.5.1). `status` is free (§5): a gateway attaches no payment, holds no lease and calls no paid route, here or anywhere.
 3. **The running member is the one answering `state: "running"` with `access`.** A member answering `reserved`, `stopped` or an ending (§6.7) is simply **not the target**; that is not an error, and a Standby Set is expected to answer mostly `reserved`. Where more than one member answers `running` — a Takeover settled at two places for an instant — the member earliest in `standby_set` is taken, so two gateways holding the same grant resolve the same way.
 4. **A refusal is not an answer about the lease.** `bad_grant` says this gateway may not read the lease; `unknown_workload` says this member never held it (§5). Neither says the workload is not running here, so a refusal MUST be counted with a member that could not be reached and MUST NOT be counted as a member that answered — a gateway that told a tenant "no member is running it" on the strength of a `bad_grant` would be stating a fact about the lease that it never learned.
-5. **The target is `access.host`, and the `host_port` of the entry in `access.ports` whose `container_port` equals the grant's `http_port`.** It is **not** the first port listed and **not** `ssh_port`. A workload commonly exposes several ports and the host ports are the provider's to choose; the grant carries `http_port` precisely so that a gateway has to guess nothing (§6.5). A member answering `running` with no entry for that container port is not a target either.
+5. **The target is `access.host`, and the `host_port` of the entry in `access.ports` whose `container_port` equals the handover's `http_port`.** It is **not** the first port listed and **not** `ssh_port`. A workload commonly exposes several ports and the host ports are the provider's to choose; the handover carries `http_port` precisely so that a gateway has to guess nothing (§12.1). A member answering `running` with no entry for that container port is not a target either.
 
 A resolution in which every member answered about the lease and none was running is `no_running_member`; one in which a member told this gateway nothing — it was unreachable, or it refused — is `member_unreachable` (§12.3). A gateway SHOULD log which member said what, because a Standby Set answering `reserved` everywhere and a Standby Set that will tell this gateway nothing look identical from outside.
 
-**Carriage is not fixed here.** What a member must RECEIVE is the request above, in the packet body §6.1.2 defines; how it gets there is §5's question and its connector's, exactly as for any other client of a free route. A gateway that seals the request through a member's connector and a gateway that reaches a member's free `status` route directly send the same bytes and are answered the same. Nothing in this section adds a carriage requirement, and nothing in it excuses a gateway from the signature, the one `p` tag, the `op`, the window or the grant.
+**Carriage is not fixed here.** What a member must RECEIVE is the request above, in the packet body §6.1.2 defines; how it gets there is §5's question and its connector's, exactly as for any other client of a free route. A gateway that seals the request through a member's connector and a gateway that reaches a member's free `status` route directly send the same bytes and are answered the same. Nothing in this section adds a carriage requirement, and nothing in it excuses a gateway from the one `provider`, the `op`, the window, the grant or the moment that grant names.
 
 A gateway MAY keep the target it resolved and forward to it without asking again. When it MUST ask again — a Takeover, a cadence, a grant that ran out — is §12.7.
 
@@ -745,7 +796,7 @@ A gateway MUST NOT require anything of the workload: no header the application h
 
 ### 12.6 A readable name
 
-Beside the canonical hostname, which a workload always has (§12.2), a grant MAY carry a `name` (§6.5), and a gateway MAY serve the workload at `<name>.<gateway domain>` as well.
+Beside the canonical hostname, which a workload always has (§12.2), a handover MAY carry a `name` (§12.1), and a gateway MAY serve the workload at `<name>.<gateway domain>` as well.
 
 A name is **first come, first served**, and served only when
 
@@ -754,13 +805,13 @@ A name is **first come, first served**, and served only when
 
 A `name` that fails either is **logged and ignored, and costs the grant nothing else** — the workload keeps its canonical hostname, which is the name a tenant can always derive and can never lose to somebody else's grant. So both workloads in a collision stay reachable, and a readable name is never ambiguous: it is either one workload's or nobody's. For the same reason the canonical hostname wins whenever a `name` happens to spell one.
 
-An expired grant keeps its name until another grant claims it — so a tenant whose readable URL stopped working is told the **grant** expired (§12.3), rather than that the hostname means nothing here — and a grant that rotated its workload to another gateway gives its name up at once, along with the workload.
+An expired grant keeps its name until another grant claims it — so a tenant whose readable URL stopped working is told the **grant** expired (§12.3), rather than that the hostname means nothing here — and a workload that stops being served here gives its name up at once, along with the workload.
 
-Because a name is a convenience and the canonical hostname is not, a gateway MAY refuse names by its own policy, and two gateways holding the same grants MAY disagree about who has which name. Nothing in this protocol depends on a readable name.
+Because a name is a convenience and the canonical hostname is not, a gateway MAY refuse names by its own policy, and two gateways handed the same workloads MAY disagree about who has which name. Nothing in this protocol depends on a readable name.
 
 ### 12.7 Following the workload
 
-§12.4 finds where a workload is running once. This is what keeps that answer true, because nothing tells a gateway that it stopped being true: a Takeover moves the workload with no tenant online (§7.1, ADR 0010), a primary's self-stop, an expiry and an eviction (§6.7) announce nothing to a gateway at all, and a tenant's own rotation names somebody else. A gateway follows the **workload**, not the provider it first found it on.
+§12.4 finds where a workload is running once. This is what keeps that answer true, because nothing tells a gateway that it stopped being true: a Takeover moves the workload with no tenant online (§7.1, ADR 0010), and a primary's self-stop, an expiry and an eviction (§6.7) announce nothing to a gateway at all. A gateway follows the **workload**, not the provider it first found it on.
 
 **The Takeover watch.** For each workload it holds a grant for, a gateway watches
 
@@ -768,7 +819,7 @@ Because a name is a convenience and the canonical hostname is not, a gateway MAY
 { "kinds": [30433], "#d": ["<workload_id>"] }
 ```
 
-on the **primary's Relay Set** — the `relays` of the Provider Profile of `standby_set[0]` — because that is where §7.1 has a standby publish its claim, and it need not be a relay the gateway is configured with. A gateway whose primary names no Relay Set has nowhere else to look and MAY watch its own relays instead. A relay is trusted for nothing here either: the event's `id` and `sig` MUST verify, and a claim signed by a key the grant's `standby_set` does not name MUST be ignored, exactly as §7.1 ignores it — otherwise anyone could publish one and hold up a gateway's re-asks.
+on the **primary's Relay Set** — the `relays` of the Provider Profile of `standby_set[0]` — because that is where §7.1 has a standby publish its claim, and it need not be a relay the gateway is configured with. A gateway whose primary names no Relay Set has nowhere else to look and MAY watch its own relays instead. A relay is trusted for nothing here either: the event's `id` and `sig` MUST verify, and a claim signed by a key the handover's `standby_set` does not name MUST be ignored, exactly as §7.1 ignores it — otherwise anyone could publish one and hold up a gateway's re-asks.
 
 **The settle window.** A Takeover event does not mean the workload has moved. It means a standby announced that it intends to take it, and §7.1 gives that standby **2 × `liveness_cadence_s`** — the **primary's** cadence, as the primary's Profile states it — from its **own announcement** before it starts anything. So a gateway MUST NOT re-resolve before `created_at + 2 × liveness_cadence_s` of the claim it saw, counted from the event's `created_at` and **not** from when the gateway happened to receive it: a relay that was slow, or a gateway that was restarted, does not move the deadline, and a claim whose window has already passed is one to act on now. Re-resolving earlier costs a round of `status` to every member and can only learn that nothing is running — the primary has stopped and the standby has not started — which is exactly the moment the last known target must keep serving.
 
@@ -780,27 +831,21 @@ A primary whose Profile states no `liveness_cadence_s` is a defective Profile (�
 
 **The last known target keeps serving.** While a re-resolution is in flight, requests continue to be forwarded to the member last seen running. Only a **finished** resolution changes the target or withdraws it. A slow relay, a slow connector or a member taking its time therefore never takes a healthy workload offline **while it is being waited for**; what they cost is the freshness of the answer, not the service. A resolution that finished withdraws the target both when every member answered and none was running and when no member told the gateway anything at all, and the tenant is told which of §12.3's two reasons it was: §12.4 keeps those apart on purpose, and neither is silence.
 
-**A grant that ran out.** When `now > expires_at`, the workload stops being served and is answered `grant_expired` (§12.3). A gateway MUST NOT carry an expired grant to a provider, which would refuse it `bad_grant` (§6.5) and rightly. No timer, restart or operator action is involved on either side: expiry is a comparison made when a request arrives, and a tenant that republishes the grant under the same workload id is served again by the same act (§12.1).
+**A grant that ran out.** When `now > expires_at`, the workload stops being served and is answered `grant_expired` (§12.3). A gateway MUST NOT carry an expired grant to a provider, which would refuse it `bad_grant` (§6.5.1) and rightly. No timer, restart or operator action is involved on either side: expiry is a comparison made when a request arrives, and a tenant that hands over a grant derived for a later moment is served again by that same act (§12.1).
 
-**A grant that named somebody else.** A grant rotating a workload away names the **other** gateway in its `p` tag, so §12.1's `#p` filter cannot carry it. A gateway that wants a tenant's rotation to take effect without its operator's help MUST therefore watch a second filter, on the workload ids it holds:
-
-```json
-{ "kinds": [30438], "#d": ["<workload_id>", "…"] }
-```
-
-on the relays it is configured with, which is where the grant that brought the workload here was published. Because that filter carries events from **anyone**, the replacement rule of §12.1 is not enough on its own: a gateway MUST NOT let a grant signed by a key other than the **tenant of the grant it holds** replace that grant, whatever its `created_at`. A grant's whole authority is its signer — a provider honours one exactly when the lease's tenant signed it (§6.5) — so an event with the same `d` from another key is not a later grant for that workload, and treating it as one would let a stranger take any workload off any gateway. A grant that IS the tenant's and names another gateway withdraws the workload at once: the gateway stops forwarding it, stops watching it and gives up its name (§12.6).
+**A tenant that wants serving to stop sooner** sends a **Gateway Withdrawal** over the same sealed channel a handover came in on. A withdrawal ends *serving*, not *reading*: the withdrawn gateway keeps a working grant until its `expires_at`, because there is no revocation before expiry (§6.5.1). Its shape and the rule that admits one are specified by a later ticket of Milestone 6 ([#61](https://github.com/toon-protocol/TOON_Network/issues/61)).
 
 **What a tenant sees.** Two timings follow from this section, and a tenant should be told them rather than left to measure them. After a Takeover, a URL moves roughly one settle window after the claim was published — `2 × liveness_cadence_s` from its `created_at`, plus whatever a gateway's own polling granularity adds — and it keeps answering from the old member throughout, until the member running it can be found. After a self-stop, an expiry or an eviction, a URL stops being served within one `liveness_cadence_s`. Neither depends on the tenant being online.
 
 ### 12.8 A workload on a Hidden Provider
 
-A Hidden Provider publishes no host: its connector is reachable only at an `.anyone` address, and every lease it runs is reachable only at a per-lease `.anyone` address (§10, ADR 0008). A gateway fronts such a workload exactly as it fronts any other, and the provider stays hidden, because **the gateway is an ordinary client of the per-lease address**: it dials an `.anyone` host through an anon client — a `socks5h://` proxy to a running `anon` daemon, as a tenant of a hidden lease does (§10) — and nothing else in §12.4 or §12.5 changes. The grant, the `status` request, which member is the running one, the target port and the forwarded headers are all the same.
+A Hidden Provider publishes no host: its connector is reachable only at an `.anyone` address, and every lease it runs is reachable only at a per-lease `.anyone` address (§10, ADR 0008). A gateway fronts such a workload exactly as it fronts any other, and the provider stays hidden, because **the gateway is an ordinary client of the per-lease address**: it dials an `.anyone` host through an anon client — a `socks5h://` proxy to a running `anon` daemon, as a tenant of a hidden lease does (§10) — and nothing else in §12.1, §12.4 or §12.5 changes. The handover, the grant, the `status` request, which member is the running one, the target port and the forwarded headers are all the same. An admission round (§12.1) goes the same way as any other round: a gateway with no proxy configured refuses a handover naming a member at an `.anyone` connector rather than dialling one, and refuses it before anything is tried.
 
-**Both legs go the same way.** A Standby Set member whose Profile gives a `connector_url` at an `.anyone` host is sent `status` (§12.4) through the proxy; a running member whose `access.host` is an `.anyone` name is forwarded to (§12.5) through the same proxy. **Any other host is dialled directly.** A Standby Set that mixes a public member with a hidden one therefore resolves and forwards with no configuration beyond the proxy: each member is reached the way its own address calls for, and nothing in the grant says which members are hidden.
+**Both legs go the same way.** A Standby Set member whose Profile gives a `connector_url` at an `.anyone` host is sent `status` (§12.4) through the proxy; a running member whose `access.host` is an `.anyone` name is forwarded to (§12.5) through the same proxy. **Any other host is dialled directly.** A Standby Set that mixes a public member with a hidden one therefore resolves and forwards with no configuration beyond the proxy: each member is reached the way its own address calls for, and nothing in the handover says which members are hidden.
 
 An `.anyone` name MUST NOT be resolved or dialled directly, under any circumstances. It has no meaning to a system resolver, and handing one to the resolver would put a hidden service into a plaintext DNS query — the exact fact hiding withholds. So the name goes to the proxy **as a name** (`socks5h`, under which the proxy resolves it; not `socks5`, under which the gateway would), and **a gateway with no proxy configured MUST refuse a workload that needs one**, with the reason `no_proxy` (§12.3), before anything is tried. `no_proxy` is not `member_unreachable` and MUST NOT be collapsed into it: the first is a fact about the gateway's configuration and the second about its reach, and an operator acts on them differently. A relay a Profile names at an `.anyone` host (§12.4) is likewise never dialled directly: a gateway that does not reach relays through its anon client does not watch that relay, and SHOULD log that it did not.
 
-**What fronting a hidden workload discloses.** A gateway reads every request it fronts, hidden or not (§12); that is the cost of the name, and the tenant chooses who pays it. Fronting a Hidden Provider's workload reveals **the workload's existence and its traffic pattern, and not the provider's location**: the gateway is one more client of the per-lease `.anyone` address, and learns nothing about where the provider is that the tenant's own client would not (ADR 0008). The provider stays hidden; the tenant's workload stops being, and that is the tenant's choice to make, by publishing the grant (§10).
+**What fronting a hidden workload discloses.** A gateway reads every request it fronts, hidden or not (§12); that is the cost of the name, and the tenant chooses who pays it. Fronting a Hidden Provider's workload reveals **the workload's existence and its traffic pattern, and not the provider's location**: the gateway is one more client of the per-lease `.anyone` address, and learns nothing about where the provider is that the tenant's own client would not (ADR 0008). The provider stays hidden; the tenant's workload stops being, and that is the tenant's choice to make, by handing the workload to a gateway (§10).
 
 ---
 
