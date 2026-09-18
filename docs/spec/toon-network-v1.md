@@ -764,7 +764,7 @@ A reader MUST NOT refuse a reason it does not know: later rounds add reasons, ex
 
 A request to a hostname the gateway holds no grant for is answered by the **gateway itself** and MUST reach no provider and no workload: nothing is dialled, no `status` is sent, and no relay is read on its account. A gateway is not a probe, and an unknown hostname must not become one. The one thing that does make a gateway send a `status` about a workload it holds nothing for is an admission round, and §12.1 bounds that.
 
-These reasons are what a gateway says at a **hostname**. What it says to a tenant that sent it a handover is a separate, smaller vocabulary, in the same shape (§12.1).
+These reasons are what a gateway says at a **hostname**. What it says to a tenant that sealed it a handover or a withdrawal is a separate, smaller vocabulary, in the same shape (§12.1, §12.7).
 
 ### 12.4 Resolving a workload across its Standby Set
 
@@ -805,7 +805,7 @@ A name is **first come, first served**, and served only when
 
 A `name` that fails either is **logged and ignored, and costs the grant nothing else** — the workload keeps its canonical hostname, which is the name a tenant can always derive and can never lose to somebody else's grant. So both workloads in a collision stay reachable, and a readable name is never ambiguous: it is either one workload's or nobody's. For the same reason the canonical hostname wins whenever a `name` happens to spell one.
 
-An expired grant keeps its name until another grant claims it — so a tenant whose readable URL stopped working is told the **grant** expired (§12.3), rather than that the hostname means nothing here — and a workload that stops being served here gives its name up at once, along with the workload.
+An expired grant keeps its name until another grant claims it — so a tenant whose readable URL stopped working is told the **grant** expired (§12.3), rather than that the hostname means nothing here. A workload **withdrawn** by its tenant is the other way about: it gives its name up **at once**, along with everything else that was being served for it (§12.7).
 
 Because a name is a convenience and the canonical hostname is not, a gateway MAY refuse names by its own policy, and two gateways handed the same workloads MAY disagree about who has which name. Nothing in this protocol depends on a readable name.
 
@@ -833,9 +833,46 @@ A primary whose Profile states no `liveness_cadence_s` is a defective Profile (�
 
 **A grant that ran out.** When `now > expires_at`, the workload stops being served and is answered `grant_expired` (§12.3). A gateway MUST NOT carry an expired grant to a provider, which would refuse it `bad_grant` (§6.5.1) and rightly. No timer, restart or operator action is involved on either side: expiry is a comparison made when a request arrives, and a tenant that hands over a grant derived for a later moment is served again by that same act (§12.1).
 
-**A tenant that wants serving to stop sooner** sends a **Gateway Withdrawal** over the same sealed channel a handover came in on. A withdrawal ends *serving*, not *reading*: the withdrawn gateway keeps a working grant until its `expires_at`, because there is no revocation before expiry (§6.5.1). Its shape and the rule that admits one are specified by a later ticket of Milestone 6 ([#61](https://github.com/toon-protocol/TOON_Network/issues/61)).
+**A tenant that withdraws a workload.** A tenant that wants serving to stop before `expires_at` sends a **Gateway Withdrawal**, sealed to the gateway's connector over the channel a handover came in on (§12.1): the connector unseals the envelope and forwards plain HTTP, and the gateway reads the body as plaintext JSON. Both messages go to the one route that connector terminates, so what says which of them this is, is the body's one key. The body is `{ "withdrawal": … }` — that key and no other:
 
-**What a tenant sees.** Two timings follow from this section, and a tenant should be told them rather than left to measure them. After a Takeover, a URL moves roughly one settle window after the claim was published — `2 × liveness_cadence_s` from its `created_at`, plus whatever a gateway's own polling granularity adds — and it keeps answering from the old member throughout, until the member running it can be found. After a self-stop, an expiry or an eviction, a URL stops being served within one `liveness_cadence_s`. Neither depends on the tenant being online.
+```json
+{
+  "withdrawal": {
+    "workload_id": "…",
+    "expires_at":  <unix seconds>,
+    "standby_set": [ { "provider": "<pubkey, hex>", "grant": "<32 bytes, hex>" }, … ]
+  }
+}
+```
+
+- **`standby_set`** is spelled exactly as a handover spells it (§12.1) — the lease's Standby Set in its own order, primary first, every member carrying the Gateway Grant derived **for its own key** (§6.5.1) — because it is the same fact, and a gateway that can read one message has learned to read the other.
+- **`expires_at`** is the moment those grants were derived for, so it says **which grant** this withdrawal bears. It is not a deadline, and a gateway MUST NOT compare it with the clock: withdrawing a grant whose moment has already passed is an ordinary withdrawal, and worth making, because an expired grant is still holding the workload's readable name (§12.6).
+- A field this specification does not name MUST be refused, never dropped (ADR 0004). A withdrawal carries no `http_port` and no `name`: nothing is left to serve, so there is nothing to serve it on.
+
+> A withdrawal MUST NOT stop a workload being served unless it **bears the grant that workload is being served under** — the value this gateway holds for a member of that workload's Standby Set. The comparison MUST be made in **constant time**. A withdrawal bearing anything else MUST be ignored and logged, and the workload MUST go on being served. A gateway MUST ask no provider and read no relay in order to answer one.
+
+**Why the grant stands in for a signature.** Nothing a tenant produces is signed, so a gateway can no more ask who sent a withdrawal than it can ask who sent a handover — and the rule this section has to keep is that **a stranger must never be able to take any workload off any gateway**. The grant keeps it. Only the holder of the lease's Continuation Token can derive one (§6.5.1), and the only other party holding this one is the gateway being withdrawn, whose withdrawing itself costs nobody anything. So bearing the grant is proof of the one thing that matters here, exactly as being accepted by a member is proof at admission (§12.1). **One member's grant is enough**, and it is all a tenant can be asked for: every value in a set derives from the one root secret, so producing one of them is producing all of them.
+
+A withdrawal buys no work anywhere else — nobody is asked, nothing is dialled — so there is nothing here to rate-limit as §12.1 rate-limits admission, and a withdrawal for a workload a gateway holds nothing for reaches nobody at all.
+
+**What a withdrawal ends, and it ends at once.** The three things a grant naming another gateway used to cause, all together and with no round anywhere:
+
+- the workload **stops being forwarded**, and its canonical hostname is answered `no_grant` (§12.3) by the gateway itself;
+- the workload **stops being followed**: the Takeover watch above is closed, the per-cadence re-ask stops, and the last known target is forgotten;
+- its **readable name is given up**, free for the next grant that asks for it (§12.6).
+
+**A withdrawal ends *serving*, not *reading*.** The withdrawn gateway keeps a **working grant** until its `expires_at`: it could still present that grant for `status` and be answered, and the provider is neither told nor has anything to be told. **There is no revocation before expiry** (§6.5.1), and a withdrawal is not one. Ending the reading as well means rotating the lease's own Continuation Token, which ends every grant derived from it at once and is a later milestone (§6.5.1); until then a tenant that wants a gateway's reading bounded derives grants for the shortest `expires_at` it can live with. A gateway MUST NOT answer, log or otherwise present a withdrawal as a revoked delegation.
+
+**What a gateway answers a withdrawal.** One it acted on is answered `{ "workload_id", "hostname", "withdrawn": true }`, where the hostname is the canonical one (§12.2) that is no longer served here. One it did not is answered the error shape of §5 — exactly the two keys `error` and `message`:
+
+| Code | Means |
+|---|---|
+| `invalid_withdrawal` | It is not a withdrawal: a field this specification does not name, or one of them malformed. Nothing was withdrawn. |
+| `not_withdrawn` | This gateway is not serving that workload under the grant borne — a wrong grant, a grant it has since replaced, or a workload it holds nothing for. Nothing changed and nobody was asked. |
+
+One code covers all three of those, because the tenant's next step is the same for each: derive the grant the gateway holds now and send it again. A gateway MAY log which it was; what it MUST NOT do is put a grant, whole or in part, into either answer or into anything it logs, exactly as at admission (§12.1, §6.1.1).
+
+**What a tenant sees.** Two timings follow from this section, and a tenant should be told them rather than left to measure them. After a Takeover, a URL moves roughly one settle window after the claim was published — `2 × liveness_cadence_s` from its `created_at`, plus whatever a gateway's own polling granularity adds — and it keeps answering from the old member throughout, until the member running it can be found. After a self-stop, an expiry or an eviction, a URL stops being served within one `liveness_cadence_s`. Neither depends on the tenant being online. A withdrawal is the one thing in this section with no timing at all: it has taken effect by the time the gateway answers it.
 
 ### 12.8 A workload on a Hidden Provider
 
