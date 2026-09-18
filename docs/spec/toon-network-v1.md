@@ -680,13 +680,26 @@ Milestone 5 said that a grant handed over by a request MUST NOT put a workload o
 
 > A handover MUST NOT put a workload on a hostname until **one round of `status` to the members it names has been accepted by at least one of them**. A gateway MUST make that round **immediately**, and MUST make **at most one**. A handover no member accepts MUST be refused, logged and **dropped**: it is not retried, not queued and not remembered.
 
+**Not remembered** is meant literally, and it is where an implementation is most likely to go wrong. A round has to look up the members it is about before it can ask them — their Provider Profiles, off the relays — and a handover names whoever its sender liked. So whatever a gateway holds in order to make the round MUST be let go of when the round refuses it, or one sealed packet would grow what the process watches, for free and for the life of the process. What a gateway holds after a refused handover is exactly what it held before it.
+
 Being sent something is proof here precisely because **only the holder of the lease's Continuation Token can derive a grant a provider will accept** (§6.5.1). A gateway is not weighing who sent the packet — it cannot, and it does not need to. It is asking the only parties that can answer whether the grant is real.
 
 The round is §12.4's round and nothing else: each member is sent `status` presenting the grant the handover carries for it, all of them at once, bounded by whatever a gateway bounds a tenant's first request by. A member that answers **about the lease** has accepted the grant, whatever it says about the workload — `reserved`, `stopped` and an ending are acceptances, because a member that read the lease to answer them read it with this grant. A refusal (`bad_grant`, `unknown_workload`) and silence are not acceptances, exactly as §12.4 step 4 keeps them apart. **One acceptance is enough**, because a grant a member took is a grant its tenant derived.
 
 Before that round and without asking anybody, a gateway MUST refuse a handover whose `expires_at` has passed: it MUST NOT carry an expired grant to a provider (§12.7), and such a handover could put the workload nowhere in any case.
 
-A gateway answers a handover in the error shape of §5 — exactly the two keys `error` and `message` — with `invalid_handover` for something that is not a handover, `grant_expired` for a moment that has passed, `rate_limited` for a handover it will not ask about (below), and `not_admitted` when no member accepted the grant. A reader MUST NOT refuse a code it does not know. A gateway MUST NOT put a grant, whole or in part, into any of those answers or into anything it logs: the grant is a secret on the same terms as the Continuation Token it derives from (§6.1.1).
+**What a gateway answers a handover.** A handover it admitted is answered `{ "workload_id", "hostname", "expires_at" }`: the hostname is the canonical one of §12.2, which the tenant can derive itself and is told so that nothing has to be assembled from two places. A handover it refused is answered the error shape of §5 — exactly the two keys `error` and `message`:
+
+| Code | Means |
+|---|---|
+| `invalid_handover` | It is not a handover: a field this specification does not name, or one of them malformed. Nothing was asked. |
+| `grant_expired` | Its `expires_at` has passed, so no member would take the grant. Nothing was asked. |
+| `rate_limited` | This gateway will not ask one of the members named just now (below). Nothing was asked. |
+| `not_admitted` | The round was made and no member accepted the grant. The handover was dropped. |
+| `no_proxy` | A member it names is at an `.anyone` address this gateway has no anon client to reach (§12.8). Nothing was dialled. |
+| `admission_failed` | This gateway could not carry out a round at all. Nothing was decided about the grant. |
+
+`not_admitted`, `no_proxy` and `admission_failed` MUST NOT be collapsed into one another, for the reason §12.3 keeps `no_proxy` apart from every other reason: the first is a fact about the grant, the second and third about this gateway, and a tenant acts on them differently — only the first is a reason to go and derive another grant. A reader MUST NOT refuse a code it does not know. A gateway MUST NOT put a grant, whole or in part, into any of those answers or into anything it logs: the grant is a secret on the same terms as the Continuation Token it derives from (§6.1.1).
 
 **The amplification ratio, and why the rate limit is normative.** Anyone can seal a handover naming any provider, so one sealed packet the sender paid to deliver buys one free `status` to each member it names — a ratio of **about one to one** for an ordinary lease. A gateway is therefore a small reflector unless it bounds that, and so:
 
