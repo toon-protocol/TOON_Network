@@ -28,8 +28,12 @@ _Avoid_: Pod, container, VM, box
 A tenant's prepaid right to one workload on one provider, until it expires.
 _Avoid_: Rental, job, subscription
 
+**Root Secret**:
+The random value a tenant mints for a lease and keeps, from which every continuation token and gateway grant of that lease is derived. A tenant holds one per lease and never sends it.
+_Avoid_: Master key, seed, private key, lease key
+
 **Continuation Token**:
-The secret a tenant mints for a lease and presents on every later request, by which a provider knows the same party that took the lease is asking again.
+The secret a tenant derives from a lease's root secret for one provider and presents on every later request to it, by which that provider knows the same party that took the lease is asking again. One per provider, so no member of a standby set can act as the tenant against another.
 _Avoid_: Session token, API key, bearer token, password, tenant secret
 
 **Lease Interval**:
