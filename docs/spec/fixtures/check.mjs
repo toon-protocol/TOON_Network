@@ -292,7 +292,7 @@ function continuationFor(rootSecretHex, providerPubkeyHex, infoPrefix) {
   return Buffer.from(okm).toString('hex');
 }
 
-const INFO_PREFIX = constants.continuation.derivation.match(/info = "([^"]*)"/)[1];
+const INFO_PREFIX = load('continuation.vector.json').info_prefix;
 const TENANT_TOKEN = continuationFor(
   constants.tenant.root_secret,
   constants.provider.public_key,
@@ -301,7 +301,10 @@ const TENANT_TOKEN = continuationFor(
 
 {
   const vector = load('continuation.vector.json');
-  report(vector.info_prefix === INFO_PREFIX, 'continuation.vector: info_prefix is the domain constants.json states');
+  report(
+    constants.continuation.derivation.includes(`"${INFO_PREFIX}"`),
+    'continuation.vector: constants.json states the same domain the vector derives under',
+  );
   report(
     continuationFor(vector.root_secret, vector.provider_public_key, vector.info_prefix) === vector.continuation,
     'continuation.vector: the documented derivation reproduces the token',
@@ -496,8 +499,9 @@ for (const file of files) {
     );
   }
 
-  // A Standby Set (spec §6.2 step 3, §7): ONE signed spawn reaches every
-  // member, so the request is identical at all of them and the ROLE comes
+  // A Standby Set (spec §6.2 step 3, §7): the tenant sends the same spawn
+  // CONTENT to every member, but a request of its own to each — naming only
+  // that member and presenting only that member's token — so the ROLE comes
   // from this provider's position in `standby_set` together with the route it
   // arrived on. Index 0 is the primary, arrives on `.spawn` and runs the
   // workload; any other index is a Warm Standby, arrives on `.standby` and
