@@ -663,7 +663,7 @@ A fetch MUST:
 - concatenate the parts in order — a paged record's, page by page, part list by part list, exactly as an inline record's;
 - check the whole blob's digest.
 
-A reader MUST NOT trust a declared size — a Blob Record's `size`, a part's or a page's — before it is verified, and MAY bound what it reads: how much it reserves for a blob before fetching a single part, and how much of any one read it accepts, so that neither a record's own numbers nor a source's behaviour can force it past its means (Milestone 7, #79).
+A reader MUST NOT trust a declared size — a Blob Record's `size`, a part's or a page's — before it is verified, and MAY bound what it reads: how much it reserves for a blob before fetching a single part, and how much of any one read it accepts, so that neither a record's own numbers nor a source's behaviour can force it past its means (Milestone 7, #79). Before fetching a single page, a reader also MUST check a paged record's page count and each page's `parts` against the part count `size` and `part_size` already imply (§8.2) — the same check an inline record's `parts` length gets — so a record cannot force an unbounded number of page reads merely by listing more pages than its own `size` could ever hold parts for.
 
 A blob that fails verification is discarded, and the next source is tried — a Blob Record carrying both `parts` and `pages`, or neither (§8.2), is discarded the same way, without either field being trusted. A blob that no source can serve fails the spawn with `refused_image`, or `no_capacity` if the disk is full. Verified blobs SHOULD be cached across leases. `availability` (§6.4) answers for a paged Blob Record exactly as it does for an inline one: asking stays free and accurate either way.
 
