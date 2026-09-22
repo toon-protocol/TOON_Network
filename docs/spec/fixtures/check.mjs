@@ -188,6 +188,12 @@ const ERROR_CODES = [
   'expired', 'not_standby', 'not_running', 'stale_request', 'bad_grant',
 ];
 
+/** Spec §4.4's GPU label grammar: `gpu:<vendor>-<model>`, where the value
+ *  after `gpu:` matches `[a-z0-9]+(-[a-z0-9]+)*` in full and the vendor is
+ *  one of the fixed, amendable list. */
+const GPU_VENDORS = ['nvidia', 'amd', 'intel', 'apple'];
+const GPU_LABEL = new RegExp(`^gpu:(?:${GPU_VENDORS.join('|')})-[a-z0-9]+(?:-[a-z0-9]+)*$`);
+
 // ── the checks ──────────────────────────────────────────────────────────────
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -203,6 +209,42 @@ function report(ok, what) {
 }
 
 const constants = load('constants.json');
+
+// Spec §7.2's normative timing table, checked against the `timing` block the
+// reference provider's own constants produced (TOON_Network #71). Every
+// value here but `liveness_cadence_s` — the one row a provider chooses, in
+// its Profile — is fixed by the protocol, so a second implementation that
+// disagrees with any of them is checked here rather than discovered on the
+// wire.
+{
+  const timing = constants.timing;
+  const TABLE = {
+    liveness_expiry_cadences: 5,
+    takeover_trigger_cadences: 1,
+    settle_window_cadences: 2,
+    self_stop_cadences: 5,
+    request_window_s: 300,
+    sweep_interval_s: 30,
+  };
+  report(
+    Number.isInteger(timing?.liveness_cadence_s) && timing.liveness_cadence_s > 0,
+    'constants.timing: liveness_cadence_s is a positive integer (the provider\'s own Profile value)',
+  );
+  for (const [key, value] of Object.entries(TABLE)) {
+    report(timing?.[key] === value, `constants.timing: ${key} is ${value} (spec §7.2)`);
+  }
+  // The invariant spec §7.2 states: self-stop (5c) <= liveness expiry +
+  // trigger (6c) < Takeover start (6c + 2c = 8c). Checked on the fixture's
+  // own values rather than assumed, so a future change to any one of them
+  // that breaks the invariant fails here first.
+  const selfStop = timing?.self_stop_cadences;
+  const trigger = timing?.liveness_expiry_cadences + timing?.takeover_trigger_cadences;
+  const takeoverStart = trigger + timing?.settle_window_cadences;
+  report(
+    selfStop <= trigger && trigger < takeoverStart,
+    `constants.timing: the invariant self-stop (${selfStop}c) <= liveness expiry + trigger (${trigger}c) < Takeover start (${takeoverStart}c) holds`,
+  );
+}
 
 // The test keys: every fixture event is signed by one of them, so every one
 // can be re-signed. Each public key must derive from its secret key first.
@@ -492,6 +534,18 @@ for (const file of files) {
       }
       report(hasTag(doc.event, ['l', 'isolation:' + load('directory.profile.json').content.isolation, constants.label]), `${file}: carries the isolation label`);
       report(tagValues(doc.event, 'l').some((v) => v.startsWith('arch:')), `${file}: carries the arch label`);
+      // GPU labels (spec §4.2, §4.4, §11 item 1): `gpu:<vendor>-<model>` must
+      // match the grammar and equal `resources.gpu` byte for byte, or the
+      // Listing is not purchasable. A Listing with no `resources.gpu` carries
+      // no `gpu:` label at all.
+      const gpuLabels = tagValues(doc.event, 'l').filter((v) => v.startsWith('gpu:'));
+      if (doc.content.resources?.gpu !== undefined) {
+        report(gpuLabels.length === 1, `${file}: carries exactly one gpu: label when resources.gpu is set`);
+        report(GPU_LABEL.test(gpuLabels[0]), `${file}: gpu: label matches gpu:<vendor>-<model> (§4.4)`);
+        report(gpuLabels[0] === `gpu:${doc.content.resources.gpu}`, `${file}: gpu: label equals resources.gpu`);
+      } else {
+        report(gpuLabels.length === 0, `${file}: carries no gpu: label when resources.gpu is unset`);
+      }
     }
   }
 
@@ -514,15 +568,57 @@ for (const file of files) {
         report(type === 'toon-store' || type === 'oci', `${file}: blobs[${i}] has a source type this milestone defines`);
       }
     }
-    if (kase === 'blob_record') {
+    if (kase.startsWith('blob_record')) {
       report(d === doc.content.digest, `${file}: d is the blob's digest`);
       report(tagValue(doc.event, 'x') === doc.content.digest.replace(/^sha256:/, ''), `${file}: x tag is the blob digest's hex`);
-      const total = doc.content.parts.reduce((sum, p) => sum + p.size, 0);
-      report(total === doc.content.size, `${file}: the parts' sizes sum to the blob's size`);
-      report(
-        doc.content.parts.slice(0, -1).every((p) => p.size === doc.content.part_size),
-        `${file}: every part but the last is part_size bytes`,
-      );
+
+      // Exactly one of `parts` (inline) or `pages` (large blob, spec §8.2,
+      // §11 item 2) — except the one fixture that exists to be the shape
+      // this rule refuses.
+      const hasParts = Array.isArray(doc.content.parts);
+      const hasPages = Array.isArray(doc.content.pages);
+      if (kase === 'blob_record.both_forms') {
+        report(hasParts && hasPages, `${file}: carries BOTH parts and pages — the shape §8.2's one-of rule refuses`);
+      } else {
+        report(hasParts !== hasPages, `${file}: carries exactly one of parts or pages (§8.2, §11 item 2)`);
+      }
+
+      // The ordered part list, however this record carries it: `parts`
+      // directly, or `pages` concatenated in order after each page's own
+      // digest and part count are checked — exactly what a reader does
+      // before trusting a single part from a page (§8.2).
+      let parts = hasParts ? doc.content.parts : [];
+      if (hasPages) {
+        let pageParts = [];
+        for (const [i, page] of doc.content.pages.entries()) {
+          const bytes = doc.page_bytes?.[page.txid];
+          report(typeof bytes === 'string', `${file}: page_bytes carries page ${i} (${page.txid})'s own bytes`);
+          if (typeof bytes !== 'string') continue;
+          const got = sha256(Buffer.from(bytes, 'utf8')).toString('hex');
+          report(got === page.sha256, `${file}: page ${i} (${page.txid}) hashes to its recorded sha256`);
+          let parsed = null;
+          try {
+            parsed = JSON.parse(bytes);
+          } catch {
+            /* reported below */
+          }
+          report(Array.isArray(parsed), `${file}: page ${i} (${page.txid})'s bytes are a JSON array of part objects`);
+          if (Array.isArray(parsed)) {
+            report(parsed.length === page.parts, `${file}: page ${i} (${page.txid}) lists its recorded parts count`);
+            pageParts = pageParts.concat(parsed);
+          }
+        }
+        if (!hasParts) parts = pageParts; // both_forms already has its own `parts`; leave it alone
+      }
+
+      if (parts.length > 0 && kase !== 'blob_record.both_forms') {
+        const total = parts.reduce((sum, p) => sum + p.size, 0);
+        report(total === doc.content.size, `${file}: the parts' sizes sum to the blob's size`);
+        report(
+          parts.slice(0, -1).every((p) => p.size === doc.content.part_size),
+          `${file}: every part but the last is part_size bytes`,
+        );
+      }
     }
     if (kase === 'template') {
       report(typeof d === 'string' && d.length > 0, `${file}: d is the template name`);
