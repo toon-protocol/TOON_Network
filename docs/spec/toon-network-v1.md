@@ -663,6 +663,8 @@ A fetch MUST:
 - concatenate the parts in order — a paged record's, page by page, part list by part list, exactly as an inline record's;
 - check the whole blob's digest.
 
+A reader MUST NOT trust a declared size — a Blob Record's `size`, a part's or a page's — before it is verified, and MAY bound what it reads: how much it reserves for a blob before fetching a single part, and how much of any one read it accepts, so that neither a record's own numbers nor a source's behaviour can force it past its means (Milestone 7, #79).
+
 A blob that fails verification is discarded, and the next source is tried — a Blob Record carrying both `parts` and `pages`, or neither (§8.2), is discarded the same way, without either field being trusted. A blob that no source can serve fails the spawn with `refused_image`, or `no_capacity` if the disk is full. Verified blobs SHOULD be cached across leases. `availability` (§6.4) answers for a paged Blob Record exactly as it does for an inline one: asking stays free and accurate either way.
 
 A provider that does not implement this resolution at all answers `refused_image` for both Image Registry forms of §6.2's `image`, with a message saying so — never `invalid_request`, which would send a tenant to fix a request that is already correct. Whether the refusal is that or exhaustion of the chain above, it MUST come before capacity is counted and before anything is created, so `availability` (§6.4) reports it for free. The `{ reference, digest }` form consults none of this: the provider pulls `reference@digest` from the named registry and verifies the digest there.
