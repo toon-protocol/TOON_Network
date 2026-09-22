@@ -162,7 +162,7 @@ Tags. Everything a relay should match goes in a single-letter tag; numbers stay 
 ["l", "isolation:<value>", "toon.network"]
 ["l", "arch:<value>", "toon.network"]
 ["l", "hidden:true", "toon.network"]              when the Profile declares hidden: true (§10)
-["l", "gpu:<model>", "toon.network"]              when resources.gpu is set
+["l", "gpu:<vendor>-<model>", "toon.network"]     when resources.gpu is set (§4.4)
 ["t", "<capability>"]                              one per capability
 ["g", "<geohash>"]                                 optional region
 ```
@@ -174,6 +174,8 @@ A listing that sells no Warm Standby MUST omit `standby_price` rather than publi
 A Listing whose Provider Profile cannot be found is not purchasable.
 
 A Listing of a Hidden Provider MUST carry `["l", "hidden:true", "toon.network"]`, and a Listing of any other provider MUST NOT carry an `l hidden:` tag at all — never `hidden:false` — so a tenant filters for hidden compute with `#l = hidden:true` and against it by the tag's absence (§4.4, §10).
+
+A Listing whose `resources.gpu` is set MUST carry an `l gpu:<vendor>-<model>` tag equal to it, byte for byte, and a Listing where the two disagree is not purchasable (§4.4). `resources.gpu` names one device of that model; a Listing selling more than one GPU is out of scope.
 
 ### 4.3 Liveness: kind `10433` (replaceable)
 
@@ -198,12 +200,14 @@ The values a relay matches on come from a fixed vocabulary. A tenant picks a Lis
 | `l` `isolation:<value>` | `shared-kernel`, `dedicated-host` (§4.1) |
 | `l` `arch:<value>` | `amd64`, `arm64` (§4.2) |
 | `l` `hidden:<value>` | `true` only, present exactly when the provider's Profile has `hidden: true` (§4.2, §10); a provider that is not hidden carries no `hidden:` label |
-| `l` `gpu:<model>` | open (§11, item 1) |
+| `l` `gpu:<vendor>-<model>` | `gpu:<vendor>-<model>`, where the value after `gpu:` matches `[a-z0-9]+(-[a-z0-9]+)*` in full. `<vendor>` is `nvidia`, `amd`, `intel` or `apple`, and the vendor list grows by amendment. `<model>` is an open set within the grammar: the vendor's own model name, lowercased and hyphenated, including a memory size when the vendor sells variants, e.g. `nvidia-rtx-4090`, `nvidia-a100-80gb` (§4.2; §11, item 1, closed) |
 | `t` `<capability>` | `docker`, `nesting` |
 
 - A Listing MUST carry one `["t", "<capability>"]` tag per entry in `capabilities`, and MUST NOT carry a `t` tag for a capability it does not grant.
 - A tenant MUST ignore a capability value this section does not define, and MUST NOT read an unknown value as implying a known one. A provider experimenting with a capability before it is specified here SHOULD prefix it `x-`.
+- **Capability graduation.** A capability becomes specified only by an ADR plus an entry in this table; only then may a provider publish the bare name. `x-<name>` and `<name>` are distinct values forever, and a tenant MUST NOT read one as the other — a graduation never changes what an already-published `x-<name>` Listing grants.
 - Capabilities are granted by the Listing alone (ADR 0004). A spawn never names one (§6.2).
+- **GPU labels.** `resources.gpu` (§4.2) and the `gpu:<vendor>-<model>` label MUST carry the same value; a Listing where they disagree is not purchasable. A tenant MUST ignore a `gpu:` value that breaks the grammar above, rather than guess at what it means. `resources.gpu` names exactly one device of that model — multi-GPU counts are out of scope (§11, item 1, closed).
 
 #### `docker`
 
@@ -650,7 +654,7 @@ A Hidden Provider's workload MAY be given a public name by a Workload Gateway (�
 
 ## 11. Open items
 
-1. **Label vocabulary:** §4.4 fixes `isolation`, `arch`, and the `docker` and `nesting` capabilities. Still open: `gpu:<model>` naming, and how a capability beyond the `x-` prefix gets added.
+1. **Label vocabulary. Closed, 2026-09-22 (Milestone 7, #72).** §4.4 fixed `isolation`, `arch`, and the `docker` and `nesting` capabilities; it now also fixes `gpu:<vendor>-<model>` and how a capability graduates from `x-`. The GPU grammar is `[a-z0-9]+(-[a-z0-9]+)*`, `<vendor>` is `nvidia`, `amd`, `intel` or `apple` and grows by amendment, and `<model>` is an open set within the grammar, e.g. `nvidia-rtx-4090`, `nvidia-a100-80gb`. A Listing's `resources.gpu` MUST equal its `gpu:` label or it is not purchasable, a tenant MUST ignore a label that breaks the grammar, and `resources.gpu` names one device — multi-GPU is out of scope. A capability becomes specified only by an ADR plus a §4.4 entry, after which a provider publishes the bare name; `x-<name>` and `<name>` stay distinct forever, so a graduation never changes what an old Listing grants.
 2. **Large Blob Records:** a record over one store data item (~700 parts at 100 KiB) needs paging or a larger `part_size`.
 3. **Timing constants. Closed, 2026-09-22 (Milestone 7, #71).** They were first guesses; they are normative now. **§7.2** states one table — the request window, the sweep floor, the takeover trigger, the settle window and the primary self-stop, all as multiples of the provider-chosen `liveness_cadence_s` where §7.1 and §6.7 already had them — the invariant that keeps a partitioned primary from running beside the standby that takes over, and the outage window (about 3*c*) a Workload Gateway spends answering `no_running_member` (§12.3, §12.7). The values themselves are unchanged; changing one is its own ADR. ADR 0010 is amended to state the invariant and where "may briefly run two copies" still applies.
 4. **Runtime route writes. Closed, 2026-09-22 (Milestone 7, #71), out of scope.** The connector has none for terminated routes, so every listing change still restarts it (ADR 0009). A runtime write is the connector's mechanism to build, not this protocol's, so TOON Network stops tracking a change it cannot make; the connector repository owns it if it is ever built.

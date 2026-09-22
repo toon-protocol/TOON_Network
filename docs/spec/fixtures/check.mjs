@@ -188,6 +188,12 @@ const ERROR_CODES = [
   'expired', 'not_standby', 'not_running', 'stale_request', 'bad_grant',
 ];
 
+/** Spec §4.4's GPU label grammar: `gpu:<vendor>-<model>`, where the value
+ *  after `gpu:` matches `[a-z0-9]+(-[a-z0-9]+)*` in full and the vendor is
+ *  one of the fixed, amendable list. */
+const GPU_VENDORS = ['nvidia', 'amd', 'intel', 'apple'];
+const GPU_LABEL = new RegExp(`^gpu:(?:${GPU_VENDORS.join('|')})-[a-z0-9]+(?:-[a-z0-9]+)*$`);
+
 // ── the checks ──────────────────────────────────────────────────────────────
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -501,6 +507,18 @@ for (const file of files) {
       }
       report(hasTag(doc.event, ['l', 'isolation:' + load('directory.profile.json').content.isolation, constants.label]), `${file}: carries the isolation label`);
       report(tagValues(doc.event, 'l').some((v) => v.startsWith('arch:')), `${file}: carries the arch label`);
+      // GPU labels (spec §4.2, §4.4, §11 item 1): `gpu:<vendor>-<model>` must
+      // match the grammar and equal `resources.gpu` byte for byte, or the
+      // Listing is not purchasable. A Listing with no `resources.gpu` carries
+      // no `gpu:` label at all.
+      const gpuLabels = tagValues(doc.event, 'l').filter((v) => v.startsWith('gpu:'));
+      if (doc.content.resources?.gpu !== undefined) {
+        report(gpuLabels.length === 1, `${file}: carries exactly one gpu: label when resources.gpu is set`);
+        report(GPU_LABEL.test(gpuLabels[0]), `${file}: gpu: label matches gpu:<vendor>-<model> (§4.4)`);
+        report(gpuLabels[0] === `gpu:${doc.content.resources.gpu}`, `${file}: gpu: label equals resources.gpu`);
+      } else {
+        report(gpuLabels.length === 0, `${file}: carries no gpu: label when resources.gpu is unset`);
+      }
     }
   }
 
