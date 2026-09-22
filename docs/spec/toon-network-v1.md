@@ -621,8 +621,8 @@ For each blob the provider needs, it tries these sources in order, and stops at 
 3. **Blob Records on its Relay Set:** those found by `#x = <hex>`.
 
 A fetch MUST:
-- read each part from a configurable gateway pattern, e.g. `{gateway}/raw/{txid}`;
-- for a PAGED Blob Record (§8.2, §11 item 2), first read each page from the same pattern and check its `sha256` and its `parts` count, before trusting a single part it names; a page that cannot be fetched, or fails either check, fails the record exactly as a bad part does;
+- for a PAGED Blob Record (§8.2, §11 item 2), first read each page from the configurable gateway pattern and check its `sha256` and its `parts` count, before trusting a single part it names; a page that cannot be fetched, or fails either check, fails the record exactly as a bad part does;
+- read each part from that same pattern, e.g. `{gateway}/raw/{txid}`;
 - check each part's `sha256` and size;
 - concatenate the parts in order — a paged record's, page by page, part list by part list, exactly as an inline record's;
 - check the whole blob's digest.
