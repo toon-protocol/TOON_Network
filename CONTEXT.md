@@ -29,12 +29,16 @@ A tenant's prepaid right to one workload on one provider, until it expires.
 _Avoid_: Rental, job, subscription
 
 **Root Secret**:
-The random value a tenant mints for a lease and keeps, from which every continuation token and gateway grant of that lease is derived. A tenant holds one per lease and never sends it.
+The random value a tenant mints for a lease and keeps, from which every continuation token and gateway grant of that lease is derived. A tenant holds one per lease, mints a fresh one for each rotation, and never sends it.
 _Avoid_: Master key, seed, private key, lease key
 
 **Continuation Token**:
 The secret a tenant derives from a lease's root secret for one provider and presents on every later request to it, by which that provider knows the same party that took the lease is asking again. One per provider, so no member of a standby set can act as the tenant against another.
 _Avoid_: Session token, API key, bearer token, password, tenant secret
+
+**Rotation**:
+The act of replacing a lease's continuation token at one provider, after which the old token and every gateway grant derived from it no longer work.
+_Avoid_: Revocation, re-key, reset
 
 **Lease Interval**:
 The fixed period of a lease that one payment buys, set by the listing.
@@ -149,7 +153,7 @@ _Avoid_: Release, rollout, environment record
 ### Gateway delegation
 
 **Gateway Grant**:
-A tenant's delegation of reading one workload's lease state and access details until it expires, derived from that lease's continuation token.
+A tenant's delegation of reading one workload's lease state and access details until it expires or the continuation token it is derived from is rotated.
 _Avoid_: Token, API key, delegation certificate
 
 **Gateway Handover**:

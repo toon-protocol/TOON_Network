@@ -162,7 +162,7 @@ Tags. Everything a relay should match goes in a single-letter tag; numbers stay 
 ["l", "isolation:<value>", "toon.network"]
 ["l", "arch:<value>", "toon.network"]
 ["l", "hidden:true", "toon.network"]              when the Profile declares hidden: true (§10)
-["l", "gpu:<model>", "toon.network"]              when resources.gpu is set
+["l", "gpu:<vendor>-<model>", "toon.network"]     when resources.gpu is set (§4.4)
 ["t", "<capability>"]                              one per capability
 ["g", "<geohash>"]                                 optional region
 ```
@@ -175,10 +175,12 @@ A Listing whose Provider Profile cannot be found is not purchasable.
 
 A Listing of a Hidden Provider MUST carry `["l", "hidden:true", "toon.network"]`, and a Listing of any other provider MUST NOT carry an `l hidden:` tag at all — never `hidden:false` — so a tenant filters for hidden compute with `#l = hidden:true` and against it by the tag's absence (§4.4, §10).
 
+A Listing whose `resources.gpu` is set MUST carry an `l gpu:<vendor>-<model>` tag equal to it, byte for byte, and a Listing where the two disagree is not purchasable (§4.4). `resources.gpu` names one device of that model; a Listing selling more than one GPU is out of scope.
+
 ### 4.3 Liveness: kind `10433` (replaceable)
 
 - **Cadence:** one per provider, republished every `liveness_cadence_s` seconds.
-- **Expiration:** it MUST carry `["expiration", now + 5 × liveness_cadence_s]` (ADR 0007).
+- **Expiration:** it MUST carry `["expiration", now + <Liveness expiry>]`, the value §7.2's table fixes (ADR 0007).
 - **Not the ephemeral lane:** it MUST NOT be sent on the free ephemeral lane.
 
 Content is JSON:
@@ -198,12 +200,14 @@ The values a relay matches on come from a fixed vocabulary. A tenant picks a Lis
 | `l` `isolation:<value>` | `shared-kernel`, `dedicated-host` (§4.1) |
 | `l` `arch:<value>` | `amd64`, `arm64` (§4.2) |
 | `l` `hidden:<value>` | `true` only, present exactly when the provider's Profile has `hidden: true` (§4.2, §10); a provider that is not hidden carries no `hidden:` label |
-| `l` `gpu:<model>` | open (§11, item 1) |
+| `l` `gpu:<vendor>-<model>` | `gpu:<vendor>-<model>`, where the value after `gpu:` matches `[a-z0-9]+(-[a-z0-9]+)*` in full. `<vendor>` is `nvidia`, `amd`, `intel` or `apple`, and the vendor list grows by amendment. `<model>` is an open set within the grammar: the vendor's own model name, lowercased and hyphenated, including a memory size when the vendor sells variants, e.g. `nvidia-rtx-4090`, `nvidia-a100-80gb` (§4.2; §11, item 1, closed) |
 | `t` `<capability>` | `docker`, `nesting` |
 
 - A Listing MUST carry one `["t", "<capability>"]` tag per entry in `capabilities`, and MUST NOT carry a `t` tag for a capability it does not grant.
 - A tenant MUST ignore a capability value this section does not define, and MUST NOT read an unknown value as implying a known one. A provider experimenting with a capability before it is specified here SHOULD prefix it `x-`.
+- **Capability graduation.** A capability becomes specified only by an ADR plus an entry in this table; only then may a provider publish the bare name. `x-<name>` and `<name>` are distinct values forever, and a tenant MUST NOT read one as the other — a graduation never changes what an already-published `x-<name>` Listing grants.
 - Capabilities are granted by the Listing alone (ADR 0004). A spawn never names one (§6.2).
+- **GPU labels.** `resources.gpu` (§4.2) and the `gpu:<vendor>-<model>` label MUST carry the same value; a Listing where they disagree is not purchasable. A tenant MUST ignore a `gpu:` value that breaks the grammar above, rather than guess at what it means. `resources.gpu` names exactly one device of that model — multi-GPU counts are out of scope (§11, item 1, closed).
 
 #### `docker`
 
@@ -247,6 +251,7 @@ The provider's connector terminates these routes and forwards them to the provid
 | `<addr>.availability` | free | Would a spawn run? |
 | `<addr>.status` | free | Lease state and access details |
 | `<addr>.terminate` | free | Termination |
+| `<addr>.rotate` | free | Rotation of the lease's Continuation Token (§6.8) |
 
 - **Standby routes:** `<addr>.<listing>.v<n>.standby` and `<addr>.<listing>.v<n>.standby.extend` exist for exactly the listings whose Listing event carries `standby_price` (§4.2). A listing that prices no Warm Standby has neither route, and a connector MUST NOT terminate a route the provider did not price.
 - **Rate limits:** the provider SHOULD rate-limit free routes.
@@ -277,7 +282,7 @@ A Lease Request is a plain JSON object carried in request bodies. Nobody signs i
 {
   "request": {
     "request_id":   "<32 bytes, hex>",
-    "op":           "spawn" | "standby" | "status" | "terminate",
+    "op":           "spawn" | "standby" | "status" | "terminate" | "rotate",
     "provider":     "<provider pubkey, hex>",
     "expiration":   <unix seconds>,
     "continuation": "<32 bytes, hex>",
@@ -287,11 +292,11 @@ A Lease Request is a plain JSON object carried in request bodies. Nobody signs i
 ```
 
 - **`request_id`** is 32 random bytes chosen by the tenant, as 64 lowercase hex characters. Nothing is hashed and nothing is canonically serialised on either side, so two implementations have no serialisation to disagree about. The replay set keys on it.
-- **`op`** says what the request asks for, and MUST be the one the route serves: `spawn` on `<addr>.<listing>.v<n>.spawn`, `standby` on `<addr>.<listing>.v<n>.standby`, `status` on `<addr>.status`, `terminate` on `<addr>.terminate`. Anything else is `invalid_request`.
+- **`op`** says what the request asks for, and MUST be the one the route serves: `spawn` on `<addr>.<listing>.v<n>.spawn`, `standby` on `<addr>.<listing>.v<n>.standby`, `status` on `<addr>.status`, `terminate` on `<addr>.terminate`, `rotate` on `<addr>.rotate`. Anything else is `invalid_request`.
 - **`provider`** is **exactly one** provider's public key, on every op — a spawn that forms a Standby Set included (§7). A provider MUST refuse a request naming any other key. A tenant forming a set sends one request to each member, each naming only that member.
-- **`expiration`** is unix seconds. A provider MUST refuse if `now > expiration`, and SHOULD refuse if `expiration` is more than 300 s ahead of `now` (`stale_request` for either).
+- **`expiration`** is unix seconds. A provider MUST refuse if `now > expiration`, and SHOULD refuse if `expiration` is more than the Request window ahead of `now` (§7.2; `stale_request` for either).
 - **`continuation`** is the lease's Continuation Token for this provider. It MAY be absent, which is a request asserting no authority over the lease — refused, never read as an unauthenticated success (below).
-- **`content`** is the op's own JSON object (§6.2, §6.5, §6.6). A field this spec does not name, anywhere in it, MUST be refused as `invalid_request`, never dropped (ADR 0004).
+- **`content`** is the op's own JSON object (§6.2, §6.5, §6.6, §6.8). A field this spec does not name, anywhere in it, MUST be refused as `invalid_request`, never dropped (ADR 0004).
 
 **Replay:** the provider MUST keep the `request_id`s it has accepted until their `expiration`, and refuse repeats.
 
@@ -314,7 +319,7 @@ Three properties follow, and they are the whole point (ADR 0016):
 - **No key pair makes it.** It names nobody, and it links to no other lease.
 - **It is fresh per lease and per provider**, so two leases of one tenant share no observable value — and every member of a Standby Set holds a *different* token by construction, so one member cannot act as the tenant against another (§7).
 
-**A provider stores `continuation(provider)` against the lease and nothing else about the tenant.** It MUST persist it with the lease across its own restarts (§6.7). It MUST NOT write it to a log, a metric or an error message: operational surfaces must not become the leak the signature was.
+**A provider stores `continuation(provider)` against the lease and nothing else about the tenant.** It MUST persist it with the lease across its own restarts (§6.7). A **rotation** replaces it with another token the tenant names, and from then on that one is the lease's (§6.8). It MUST NOT write it to a log, a metric or an error message: operational surfaces must not become the leak the signature was.
 
 #### 6.1.2 Validation order
 
@@ -442,7 +447,7 @@ gateway_sub(provider, expires_at) = HKDF-SHA256(ikm = continuation(provider),
 
 It derives from the **token** and not from the root secret, and that is the whole of the design. A provider already stores `continuation(provider)`, so it can recompute any grant it is shown: it stores no second value, keeps nothing per gateway, reads no relay, and — a Hidden Provider included (§10) — opens no connection to check one. The tenant hands the value and its `expires_at` to the gateway out of band (§12); nothing is published, so no `workload_id` reaches a relay (ADR 0016).
 
-**Presenting one.** The grant rides in the request's `continuation`, exactly where the lease's own token rides, and `gateway_expires_at` names the moment it was derived for. That field is named by `status` content and by nothing else: a request carrying it anywhere else — a spawn, a `standby`, either extension, `availability`, or `terminate` — is `invalid_request`, like any other field this spec does not name (§6.1, ADR 0004).
+**Presenting one.** The grant rides in the request's `continuation`, exactly where the lease's own token rides, and `gateway_expires_at` names the moment it was derived for. That field is named by `status` content and by nothing else: a request carrying it anywhere else — a spawn, a `standby`, either extension, `availability`, `terminate` or `rotate` — is `invalid_request`, like any other field this spec does not name (§6.1, ADR 0004).
 
 **Verifying one.** After §6.1.2's steps 1 to 3, step 4 branches:
 
@@ -459,7 +464,7 @@ One code covers every way a delegation can fail: derived for another moment, der
 
 **What it admits.** `status`, and nothing else. `terminate` requires the lease's own token (§6.6), and the shape is what says so rather than a rule: a `terminate` carrying `gateway_expires_at` is `invalid_request`, and one without it presents a value that is not the lease's token, which is `not_tenant`.
 
-**Rotation, and no revocation.** Rotation is re-derivation at a new `expires_at`: the tenant derives a second value and hands it over (§12), and the one it replaces keeps working until its own moment passes. Nothing moves, nothing is published, and the provider is not told. **There is no revocation before expiry**, exactly as there is none for a Continuation Token: a tenant that wants a gateway cut off sooner waits for the grant's moment to pass, so a tenant SHOULD derive grants for the shortest `expires_at` it can live with and hand out new ones. Rotating the lease's own token — which would end every grant derived from it at once — is a later milestone.
+**Rotation of the grant; revocation by rotating the token.** A grant rotates by re-derivation at a new `expires_at`: the tenant derives a second value and hands it over (§12), and the one it replaces keeps working until its own moment passes. Nothing moves, nothing is published, and the provider is not told. Re-deriving revokes nothing, because both values derive from the same token. **What revokes a grant is rotating the lease's own Continuation Token** (§6.8, ADR 0018): a provider recomputes every grant from the one token it stores, so once it stores another, every grant derived from the old one is `bad_grant` at once, with nothing kept per gateway. A grant has no revocation of its own, and a rotation ends every grant of the old token together, so a tenant still SHOULD derive grants for the shortest `expires_at` it can live with and hand out new ones.
 
 ### 6.6 Termination (free)
 
@@ -484,10 +489,45 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 - **Reserved:** a Warm Standby before Takeover: the capacity is held and paid for, nothing runs, and the answer carries no `access`. The `takeover` edge does not change the role — a standby that runs its workload still answers `role: "standby"` — and adds `takeover.winner` to the answer of every member the race settled at (§6.5), the losers included, which stay `Reserved`.
 - **Stopped:** a primary that stopped its own workload under §7.1's self-stop rule. The lease is live and paid to its `expires_at` like any other — it holds its capacity slot and its `workload_id`, `.extend` still adds an interval at the running price, and the sweep still ends it — but the workload is off, so the answer carries no `access`. Only a primary reaches it, and only §7.1 moves a lease into or out of it. A provider MUST persist it: a restart must not start again what the rule stopped.
 - **Reservations count:** a `Reserved` lease holds its `workload_id` and its capacity slot exactly as a running one does, so Liveness `available` (§4.3) and `availability` (§6.4) both subtract it.
-- **Expiry:** the provider MUST sweep at least every 30 s and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
+- **Expiry:** the provider MUST sweep at least as often as the Expiry sweep floor §7.2 fixes, and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
 - **Eviction:** a provider MAY evict a lease for abuse, policy or maintenance. It MUST publish an Eviction Notice.
 - **Eviction Notice** (kind `4433`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tags `["x", "<workload_id>"]` and `["L", "toon.network"]` (the label every TOON Network event carries, §4). `reason` is one of `abuse` (the workload abused this provider or something reachable from it), `policy` (it broke a policy the provider states outside this protocol), `maintenance` (the provider needs the capacity back) or `other`; `message` says what happened in words; with `other` it is all a reader has to go on, so it SHOULD not be empty. A reader MUST NOT refuse a notice for a `reason` it does not know: a later version may add one.
-- **Persistence:** the provider MUST persist running leases and reservations across its own restarts, each with its Continuation Token (§6.1.1). A restart that forgot the token would leave a paid workload running that nobody could read, extend or stop.
+- **Persistence:** the provider MUST persist running leases and reservations across its own restarts, each with the Continuation Token it holds now — the one a rotation installed, if there was one (§6.1.1, §6.8). A restart that forgot the token would leave a paid workload running that nobody could read, extend or stop.
+
+### 6.8 Rotation (free)
+
+A tenant may replace the Continuation Token a provider holds for a lease — because it believes the token has leaked, or to cut off every Workload Gateway it delegated reading to — without respawning. This is the only way a token, or any Gateway Grant derived from it, stops working before the lease ends (ADR 0018).
+
+**Request body:** `{ "request": <Lease Request, op=rotate> }`. Content:
+
+```json
+{ "workload_id": "…", "next": "<32 bytes, hex>" }
+```
+
+— those two keys and no other. `next` is the token the lease holds from now on, as 64 lowercase hex characters. The request MUST present the lease's **current** token.
+
+**Effect.** The provider replaces the stored token with `next` and **MUST persist the lease before it answers**, so a crash straight after a rotation cannot bring the old token back. From that moment the old token is `not_tenant` on every route, and every Gateway Grant derived from it is `bad_grant`, because a provider recomputes a grant from whatever token it stores (§6.5.1). The provider keeps no second value, there is **no grace period**, and nothing is published. Nothing else about the lease changes: its role, state, `expires_at`, `access`, `template` and Standby Set are what they were.
+
+**Response:** `{ "workload_id", "rotated": true }`. It carries no token, old or new.
+
+**Validation**, in order, refusing with the first failing code:
+
+1. §6.1.2 steps 1 to 3: the shape, the `op` and `provider` (`invalid_request`), then the window and replay (`stale_request`).
+2. The content is exactly `{ workload_id, next }`, and `next` is 64 lowercase hex characters — else `invalid_request`. `gateway_expires_at` is a field this content does not name (§6.5.1), so a Workload Gateway that asserts its grant here is refused on the shape.
+3. `workload_id` names a lease this provider holds — else `unknown_workload`.
+4. §6.1.2 step 4: `continuation` is the lease's own token, compared in constant time — else `not_tenant`. **Step 4 does not branch on this route**, exactly as on `terminate` (§6.6): a Gateway Grant presented without `gateway_expires_at` is a value that is not the lease's token, and only the lease's own token may rotate it, so a gateway can never rotate a lease out from under its tenant.
+5. The lease has not ended, however it ended, an `expires_at` already past included — else `expired` (§6.3). The tenant learns the lease is gone rather than that its token is wrong.
+6. `next` is not the token the lease already holds — else `invalid_request`: a no-op must never look like a success. It is weighed only after step 4, so the answer says nothing to a request that does not already hold that token.
+
+A lease that is `provisioning`, `running`, `stopped` or `reserved` can be rotated (§6.7). Like the other free routes, `rotate` SHOULD be rate-limited (§5): every rotation it accepts is a write.
+
+**Where `next` comes from.** The provider cannot tell how `next` was made and does not check. A tenant SHOULD mint a **fresh root secret** for every rotation and derive `next = continuation(provider)` from it with §6.1.1's formula, so the rotation retires the old root secret as well: if that is what leaked, it now derives nothing that works. A tenant's tooling records the new root secret against the lease.
+
+**A Standby Set is rotated member by member.** One rotate request per member, each naming only that member and presenting only that member's token, exactly as every other request (§6.1, §7). Tokens are per member already, so a set rotated at some members and not yet at others is a valid state that breaks no invariant, and a member the tenant cannot reach right now does not block the others. A rotation at one member changes nothing at any other. The tenant keeps both root secrets until every member has confirmed.
+
+**A lost answer.** A rotate is not retried to find out whether it worked: the same request again is `stale_request`, and a new one presenting the old token after the first took effect is `not_tenant`. A tenant that did not see the answer sends `status` presenting `next`: acceptance means the rotation took effect, and `not_tenant` means it did not and the old token still holds.
+
+**Workload Gateways.** After a rotation, every rotated member refuses a grant of the old token `bad_grant`. A tenant that wants to keep its gateway derives grants from the new tokens and hands them over again (§12.1), and the ordinary admission round replaces what the gateway holds; rotating and changing gateways are separate choices.
 
 ---
 
@@ -503,16 +543,16 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 
 A standby watches the primary's Liveness on the **primary's** Relay Set, read from the primary's Provider Profile.
 
-1. **Trigger:** the primary's Liveness is expired or absent on a strict majority of that Relay Set (one of one, two of three), continuously for `liveness_cadence_s` seconds. A relay the standby cannot read holds no Liveness it can see, and counts as absent. A majority that is live again inside the cadence, even once, restarts the count.
+1. **Trigger:** the primary's Liveness is expired or absent on a strict majority of that Relay Set (one of one, two of three), continuously for the Takeover trigger §7.2 fixes. A relay the standby cannot read holds no Liveness it can see, and counts as absent. A majority that is live again inside the cadence, even once, restarts the count.
 2. **Announce:** the standby publishes a Takeover event to the primary's Relay Set.
    - Kind `30433` (addressable), `d = <workload_id>`. Addressable, so a standby leaves one claim per workload rather than a history, and step 3 reads a set of claimants.
    - Content: `{ "workload_id": "…", "primary": "<pubkey>" }`, where `primary` is the hex pubkey at `standby_set[0]`.
    - Signed by the **standby** that claims the workload, never by the primary.
-3. **Settle:** 2 × `liveness_cadence_s` after its **own** announcement — the cadence being the primary's, as its Profile states it — the standby queries kind `30433` events for `d = <workload_id>` from **pubkeys in `standby_set`**, on the primary's Relay Set, where every claim was published. Events from any other signer are ignored, and so are claims whose `primary` is not the primary this round is against: a claim naming an earlier primary belongs to an earlier race, already settled. The standby's own claim counts whether or not a relay returns it. The winner has the earliest `created_at`; a tie goes to the lower index in `standby_set`. Nothing starts before the window has elapsed, however early the other claims are visible.
+3. **Settle:** the Settle window §7.2 fixes, after its **own** announcement — the cadence being the primary's, as its Profile states it — the standby queries kind `30433` events for `d = <workload_id>` from **pubkeys in `standby_set`**, on the primary's Relay Set, where every claim was published. Events from any other signer are ignored, and so are claims whose `primary` is not the primary this round is against: a claim naming an earlier primary belongs to an earlier race, already settled. The standby's own claim counts whether or not a relay returns it. The winner has the earliest `created_at`; a tie goes to the lower index in `standby_set`. Nothing starts before the window has elapsed, however early the other claims are visible.
 4. **If it won:** the standby starts the workload from the image exactly as a spawn would, and the lease becomes Running; `status` reports `running`, `access` and `takeover.winner` (§6.5). Winning buys no time: from then on the lease needs a `.extend` (full price) before its current `expires_at`, or the sweep ends it with `expiry`. `.standby.extend` is refused `not_standby` (§6.3).
 5. **If it lost:** the standby stays Reserved — still paid on `.standby.extend`, still refused `not_running` on `.extend` — reports `takeover.winner`, and watches the winner as its new primary: the winner's Profile, the winner's Relay Set, a fresh count of silence. It forgets its own claim, so that if the winner goes silent too it announces again, naming the winner as `primary`, and the set survives a second failure.
 
-**Primary self-stop:** a primary that cannot publish Liveness to a strict majority of its own Relay Set for 5 × `liveness_cadence_s` MUST stop its workload, so that a partitioned primary does not keep running beside a Takeover.
+**Primary self-stop:** a primary that cannot publish Liveness to a strict majority of its own Relay Set for the Primary self-stop §7.2 fixes MUST stop its workload, so that a partitioned primary does not keep running beside a Takeover.
 
 - **Counting:** each publication of Liveness (§4.3) reports which relays of the Relay Set took it; a cadence counts against the primary unless a strict majority took it. A publication that could not be attempted at all counts the same way: no relay took it. One publication that reached a majority, anywhere inside the five, restarts the count. A provider with no Relay Set has no majority to lose and is not bound by the rule.
 - **Which leases:** every lease it holds as the primary of a Standby Set. A standalone lease (§6.2) is never stopped by this rule: no standby is waiting to take it over.
@@ -521,6 +561,26 @@ A standby watches the primary's Liveness on the **primary's** Relay Set, read fr
 - **After a restart of the provider:** a provider that comes back holding a primary lease with a `standby_set` MUST make the same query before it treats that lease's workload as live, and stop the workload if a Takeover exists. A provider whose process was down is the partition this rule is about, and it counted no cadences while it was.
 
 **No state moves on Takeover.** The standby starts from the image, and data replication is the workload's own job.
+
+### 7.2 Timing constants
+
+Every timing value in this protocol is fixed here, in one normative table, in units of the primary's own `liveness_cadence_s` (**c**) or in seconds. §4.3, §6.1, §6.7 and §7.1 apply these values; this is where they are set, and where a second implementation reads all of them from one place rather than five sections.
+
+| Constant | Value | Chosen by |
+|---|---|---|
+| Liveness cadence *c* | `liveness_cadence_s` | provider, in its Profile |
+| Liveness expiry | 5*c* after `created_at` | protocol |
+| Takeover trigger | expired on a strict majority for 1*c* | protocol |
+| Settle window | 2*c* from the standby's own announcement | protocol |
+| Primary self-stop | 5 consecutive cadences without a majority | protocol |
+| Request window | `expiration` ≤ now + 300 s | protocol |
+| Expiry sweep | at least every 30 s | protocol (a floor, not a period) |
+
+Only `liveness_cadence_s` is a provider's to choose, in its Profile (§4.1). Every other row is fixed by the protocol, so two members of a Standby Set run by different operators agree on when a Takeover happens without agreeing on anything else. The values are unchanged from earlier milestones (§11, item 3): this section makes them normative and does not re-tune any of them. **Changing any one of them is an ADR.**
+
+**The invariant.** self-stop (5*c*) ≤ liveness expiry + trigger (6*c*) < Takeover start (6*c* + 2*c* = 8*c*). A primary that has failed to reach a majority of its own Relay Set for 5*c* has already stopped its workload (self-stop) before any standby's Takeover can start: a standby's own trigger cannot fire before the primary's Liveness has been silent for one cadence beyond its expiry (6*c*), and the settle window it then waits out runs a further 2*c*, to 8*c*. So in the idealised case — clocks and relay reads landing exactly on the cadences they are due — a stopped primary is never running beside the standby that takes over. **ADR 0010's "may briefly run two copies" is amended to say so:** it survives only for clock skew and relay lag that carries the primary or a standby's view of it past a cadence boundary the other has not yet reached, never as the ordinary case.
+
+**The outage window.** From self-stop (5*c*) to Takeover start (8*c*) is about 3*c* in the idealised case, during which the workload runs nowhere: the primary has stopped it and the standby has not yet started it. A Workload Gateway resolving in this gap hears every member answer about the lease with nothing running, so it answers `503 no_running_member` (§12.3, §12.4) — not `member_unreachable`: every member is reachable and answered, and none of them is the target yet. §12.7's "What a tenant sees" states the same figure for a tenant.
 
 ---
 
@@ -556,17 +616,26 @@ Content is JSON:
 
 Signed by whoever uploaded the parts, with `d = "sha256:<hex>"`.
 
-Content is JSON:
+Content is JSON, in ONE of two shapes. Today's, inline:
 
 ```json
 { "digest": "sha256:…", "size": 31457280, "part_size": 102400,
   "parts": [ { "txid": "…", "sha256": "…", "size": 102400 } ] }
 ```
 
+Or, for a blob whose part list does not fit one TOON store data item (about 700 parts at 100 KiB, roughly 70 MB — Milestone 7, #73), paged:
+
+```json
+{ "digest": "sha256:…", "size": 78643200, "part_size": 102400,
+  "pages": [ { "txid": "…", "sha256": "…", "parts": 700 }, { "txid": "…", "sha256": "…", "parts": 68 } ] }
+```
+
 - **Tag:** `["x", "<hex>"]` — as in §8.1, the hex with no `sha256:` prefix. `d` keeps the prefix; the tag does not.
-- **Parts:** each is stored as one TOON store upload (`kind:5094`), and `parts` is ORDERED: a reader concatenates them as they appear and checks the result against `digest`. A part's `sha256` is bare hex, with no `sha256:` prefix — a part is not content-addressed the way a blob is.
-- **`part_size`:** the size every part but the last has. The last part is the remainder, so the parts' sizes MUST sum to `size`.
-- **Where it lives:** the Blob Record is published to relays, and the same signed event JSON is also uploaded once to the TOON store. That upload's transaction id is the `blob_record_txid` used in Image Registry entries (ADR 0006).
+- **One of `parts` or `pages`, never both, never neither.** A record carrying both, or neither, is invalid: no reader trusts either field of it, and §8.4's chain treats the whole record as a source that failed, moving on to the next one exactly as it does for a record whose parts fail their own checks.
+- **`parts` (inline):** each is stored as one TOON store upload (`kind:5094`), and `parts` is ORDERED: a reader concatenates them as they appear and checks the result against `digest`. A part's `sha256` is bare hex, with no `sha256:` prefix — a part is not content-addressed the way a blob is.
+- **`pages` (large blob, §11 item 2):** an ORDERED array of `{ "txid", "sha256", "parts" }`. Each page is ONE TOON store upload of its own, whose bytes are a JSON array of part objects — in exactly `parts`' own shape, `{ "txid", "sha256", "size" }` — covering that slice of the ordered part list. `sha256` is the bare hex digest of the PAGE's own bytes (the JSON array itself, not any part it lists); `parts` is how many part objects that array holds. A reader fetches each page and checks its `sha256` — and that parsing it really finds `parts` part objects — BEFORE trusting a single part from it, then concatenates the pages' part lists in page order into the same ordered list `parts` would have been. Every rule below then applies unchanged: `part_size`, the parts' sizes summing to `size`, each part's own check, and the whole blob's digest. There is no new event kind and no change to an Image Registry entry: `blob_record_txid` still names the Blob Record itself, whichever shape its content takes, and a provider MUST read both.
+- **`part_size`:** the size every part but the last has. The last part is the remainder, so the parts' sizes MUST sum to `size` — true of the ordered part list either shape yields.
+- **Where it lives:** the Blob Record is published to relays, and the same signed event JSON is also uploaded once to the TOON store. That upload's transaction id is the `blob_record_txid` used in Image Registry entries (ADR 0006). A page's upload is separate from both: it is not signed, and nothing about it is addressable — a reader has it only by the txid the record's own content names.
 
 ### 8.3 Template: kind `30436` (addressable)
 
@@ -588,12 +657,13 @@ For each blob the provider needs, it tries these sources in order, and stops at 
 3. **Blob Records on its Relay Set:** those found by `#x = <hex>`.
 
 A fetch MUST:
-- read each part from a configurable gateway pattern, e.g. `{gateway}/raw/{txid}`;
+- for a PAGED Blob Record (§8.2, §11 item 2), first read each page from the configurable gateway pattern and check its `sha256` and its `parts` count, before trusting a single part it names; a page that cannot be fetched, or fails either check, fails the record exactly as a bad part does;
+- read each part from that same pattern, e.g. `{gateway}/raw/{txid}`;
 - check each part's `sha256` and size;
-- concatenate the parts in order;
+- concatenate the parts in order — a paged record's, page by page, part list by part list, exactly as an inline record's;
 - check the whole blob's digest.
 
-A blob that fails verification is discarded, and the next source is tried. A blob that no source can serve fails the spawn with `refused_image`, or `no_capacity` if the disk is full. Verified blobs SHOULD be cached across leases.
+A blob that fails verification is discarded, and the next source is tried — a Blob Record carrying both `parts` and `pages`, or neither (§8.2), is discarded the same way, without either field being trusted. A blob that no source can serve fails the spawn with `refused_image`, or `no_capacity` if the disk is full. Verified blobs SHOULD be cached across leases. `availability` (§6.4) answers for a paged Blob Record exactly as it does for an inline one: asking stays free and accurate either way.
 
 A provider that does not implement this resolution at all answers `refused_image` for both Image Registry forms of §6.2's `image`, with a message saying so — never `invalid_request`, which would send a tenant to fix a request that is already correct. Whether the refusal is that or exhaustion of the chain above, it MUST come before capacity is counted and before anything is created, so `availability` (§6.4) reports it for free. The `{ reference, digest }` form consults none of this: the provider pulls `reference@digest` from the named registry and verifies the digest there.
 
@@ -630,11 +700,11 @@ A Hidden Provider's workload MAY be given a public name by a Workload Gateway (�
 
 ## 11. Open items
 
-1. **Label vocabulary:** §4.4 fixes `isolation`, `arch`, and the `docker` and `nesting` capabilities. Still open: `gpu:<model>` naming, and how a capability beyond the `x-` prefix gets added.
-2. **Large Blob Records:** a record over one store data item (~700 parts at 100 KiB) needs paging or a larger `part_size`.
-3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger, the two-cadence settle window (measured from each standby's own announcement, so two standbys that saw the silence at different instants settle at different instants) and the five-cadence primary self-stop are first guesses.
-4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
-5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
+1. **Label vocabulary. Closed, 2026-09-22 (Milestone 7, #72).** §4.4 fixed `isolation`, `arch`, and the `docker` and `nesting` capabilities; it now also fixes `gpu:<vendor>-<model>` and how a capability graduates from `x-`. The GPU grammar is `[a-z0-9]+(-[a-z0-9]+)*`, `<vendor>` is `nvidia`, `amd`, `intel` or `apple` and grows by amendment, and `<model>` is an open set within the grammar, e.g. `nvidia-rtx-4090`, `nvidia-a100-80gb`. A Listing's `resources.gpu` MUST equal its `gpu:` label or it is not purchasable, a tenant MUST ignore a label that breaks the grammar, and `resources.gpu` names one device — multi-GPU is out of scope. A capability becomes specified only by an ADR plus a §4.4 entry, after which a provider publishes the bare name; `x-<name>` and `<name>` stay distinct forever, so a graduation never changes what an old Listing grants.
+2. **Large Blob Records. Closed, 2026-09-22 (Milestone 7, #73).** A Blob Record's content now carries **either** `parts` (unchanged) **or** `pages` — never both, never neither. `pages` is an ordered `{ "txid", "sha256", "parts" }` array; each page is one further TOON store upload of its own, a JSON array of part objects in `parts`' own shape, and `sha256` is the bare hex of the page's own bytes. A reader fetches and digest-checks every page, and its `parts` count, before trusting a single part from it, then concatenates the pages' part lists in page order into the same ordered list `parts` would have been — after which `part_size`, the size sum, every per-part check and the whole-blob digest (§8.4) apply unchanged. No new event kind and no change to an Image Registry entry. A record with both forms, with neither, or with a page that cannot be fetched or fails its digest, fails that source and §8.4's chain moves on; `availability` (§6.4) answers a paged blob exactly as an inline one. The publisher tool switches to `pages` on its own once the inline record would not fit one store data item (about 700 parts, ~70 MB); the switch point is the tool's own choice and is not normative, and small blobs keep inline `parts`.
+3. **Timing constants. Closed, 2026-09-22 (Milestone 7, #71).** They were first guesses; they are normative now. **§7.2** states one table — the request window, the sweep floor, the takeover trigger, the settle window and the primary self-stop, all as multiples of the provider-chosen `liveness_cadence_s` where §7.1 and §6.7 already had them — the invariant that keeps a partitioned primary from running beside the standby that takes over, and the outage window (about 3*c*) a Workload Gateway spends answering `no_running_member` (§12.3, §12.7). The values themselves are unchanged; changing one is its own ADR. ADR 0010 is amended to state the invariant and where "may briefly run two copies" still applies.
+4. **Runtime route writes. Closed, 2026-09-22 (Milestone 7, #71), out of scope.** The connector has none for terminated routes, so every listing change still restarts it (ADR 0009). A runtime write is the connector's mechanism to build, not this protocol's, so TOON Network stops tracking a change it cannot make; the connector repository owns it if it is ever built.
+5. **Template expansion. Closed, 2026-09-22 (Milestone 7, #71).** The tenant expands a Template into a spawn; a provider never reads one, and `template` in a spawn stays informational (§8.3). The earlier walkthrough that described a provider reading a Template does not describe v1.
 6. **Hostnames and TLS. Closed, 2026-09-17 (Milestone 5, #46).** They stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`, which **§12** now specifies in full — what a gateway is, how it is told what to serve, the canonical hostname it derives, its error page, resolution across a Standby Set, what a forwarded request carries, a readable name, how it follows the workload through a Takeover, and a workload on a Hidden Provider. The authority it needed is a **delegation of `status`** (§6.5). ADR 0013 is *Accepted*. Milestone 6 (#56) changes how that delegation is carried — a **Gateway Grant** derived from the lease's Continuation Token and handed to the gateway directly (§6.5.1), rather than an event the tenant signs and publishes — without reopening the decision. What a gateway is told besides the grant, chiefly which of a spawn's `ports` is the HTTP one, travels with it in the **Gateway Handover** that milestone's later tickets specify.
 7. **Later rounds.** Reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
 
@@ -715,7 +785,8 @@ The rate is a gateway's own to choose. What is not optional is that there is one
 
 A gateway holds at most **one** grant per workload, and a later handover **admission accepted** replaces the one held. Nothing is weighed to decide which of two is current — there is no `created_at` to compare and no signature to weigh — because getting past admission is already the proof that its sender may replace what is held. Renewal, rotation of the grant's moment and a change of Standby Set are therefore all the same act, and all take effect with no restart and no operator action:
 
-- a handover with a further `expires_at` renews (§6.5.1's rotation, from the gateway's side);
+- a handover with a further `expires_at` renews (§6.5.1's rotation of the grant, from the gateway's side);
+- a handover whose grants derive from tokens the tenant has rotated (§6.8) restores serving a workload whose members now refuse the grant held, and replaces it;
 - a handover naming a different Standby Set moves the workload's members;
 - a grant that reaches its `expires_at` stops being served (§12.3), and starts again by itself when its tenant hands over one derived for a later moment.
 
@@ -861,7 +932,7 @@ A withdrawal buys no work anywhere else — nobody is asked, nothing is dialled 
 - the workload **stops being followed**: the Takeover watch above is closed, the per-cadence re-ask stops, and the last known target is forgotten;
 - its **readable name is given up**, free for the next grant that asks for it (§12.6).
 
-**A withdrawal ends *serving*, not *reading*.** The withdrawn gateway keeps a **working grant** until its `expires_at`: it could still present that grant for `status` and be answered, and the provider is neither told nor has anything to be told. **There is no revocation before expiry** (§6.5.1), and a withdrawal is not one. Ending the reading as well means rotating the lease's own Continuation Token, which ends every grant derived from it at once and is a later milestone (§6.5.1); until then a tenant that wants a gateway's reading bounded derives grants for the shortest `expires_at` it can live with. A gateway MUST NOT answer, log or otherwise present a withdrawal as a revoked delegation.
+**A withdrawal ends *serving*, not *reading*.** The withdrawn gateway keeps a **working grant** until its `expires_at` or until the tenant rotates the lease's tokens, whichever comes first: it could still present that grant for `status` and be answered, and the provider is neither told nor has anything to be told. A withdrawal is not a revocation. Ending the reading as well means rotating the lease's own Continuation Token at every member on `<addr>.rotate` (§6.8), which ends every grant derived from the old tokens at once: each member then refuses the grant this gateway holds `bad_grant`, which §12.4 counts as a member that told it nothing. A tenant that rotates and wants to keep a gateway hands it grants of the new tokens (§12.1). A gateway MUST NOT answer, log or otherwise present a withdrawal as a revoked delegation.
 
 **What a gateway answers a withdrawal.** One it acted on is answered `{ "workload_id", "hostname", "withdrawn": true }`, where the hostname is the canonical one (§12.2) that is no longer served here. One it did not is answered the error shape of §5 — exactly the two keys `error` and `message`:
 
@@ -873,7 +944,7 @@ A withdrawal buys no work anywhere else — nobody is asked, nothing is dialled 
 
 A body a gateway could not read as either message — malformed JSON, or too large to be one — is answered `invalid_handover` (§12.1), because which of the two it was meant to be is not yet known. `not_withdrawn` covers all three of its cases, because the tenant's next step is the same for each: derive the grant the gateway holds now and send it again. It MUST NOT be collapsed with `withdrawal_failed`, for the reason §12.1 keeps `not_admitted` and `admission_failed` apart: the first is a fact about the grant borne and the second about this gateway, and a tenant told the wrong one derives a value that was never the problem. A gateway MAY log which it was; what it MUST NOT do is put a grant, whole or in part, into either answer or into anything it logs, exactly as at admission (§12.1, §6.1.1).
 
-**What a tenant sees.** Two timings follow from this section, and a tenant should be told them rather than left to measure them. After a Takeover, a URL moves roughly one settle window after the claim was published — `2 × liveness_cadence_s` from its `created_at`, plus whatever a gateway's own polling granularity adds — and it keeps answering from the old member throughout, until the member running it can be found. After a self-stop, an expiry or an eviction, a URL stops being served within one `liveness_cadence_s`. Neither depends on the tenant being online. A withdrawal is the one thing in this section with no timing at all: it has taken effect by the time the gateway answers it.
+**What a tenant sees.** Three timings follow from this section, and a tenant should be told them rather than left to measure them. Between a primary's self-stop and a Takeover's start — about `3 × liveness_cadence_s`, §7.2's outage window — the workload runs nowhere: every member answers about the lease and none of them is running it, so a gateway resolving in that gap answers `no_running_member` (§12.3), not `member_unreachable`. After a Takeover, a URL moves roughly one settle window after the claim was published — `2 × liveness_cadence_s` from its `created_at`, plus whatever a gateway's own polling granularity adds — and it keeps answering from the old member throughout, until the member running it can be found. After a self-stop, an expiry or an eviction, a URL stops being served within one `liveness_cadence_s`. None of the three depends on the tenant being online. A withdrawal is the one thing in this section with no timing at all: it has taken effect by the time the gateway answers it.
 
 ### 12.8 A workload on a Hidden Provider
 
@@ -904,6 +975,7 @@ v1 is developed against `infra/sandbox`, then pointed at production URLs.
 | Workload Gateway | the sandbox `gateway` profile (§12): domain `gw.localhost`, so a workload is at `http://<canonical label>.gw.localhost:3280/` and `https://…:3443/` (a self-signed wildcard certificate, `conf/workload-gateway-tls/`); no key of its own; its own connector at `http://localhost:3260` terminating one free route, `g.toon.workload-gateway.handover`, forwarded to the gateway's `GATEWAY_HANDOVER_PORT` (8081, published on no host port) at `/handover`; `GATEWAY_ADMIT_PER_MINUTE` left at the default 6; relays read on `ws://relay:7100` (the sandbox relay by its compose name; `ws://localhost:7100` from the host) for Provider Profiles and Takeovers only |
 | Gateway Handover (tenant side) | `node scripts/handover.mjs <lease.json>` in `infra/sandbox`, the handover tool (`provider/tools/grant/seal.mjs`) with the sandbox's values: sealed to the gateway connector's key derived from `keys/toon/workload-gateway-connector/signer.key`, paid **directly** to that connector at `http://localhost:3260` from mnemonic account index 4 (its own Solana channel; the hub does not peer with it), the root secret and the Standby Set read from the lease file `scripts/spawn.mjs` writes to `.toon-client/spawn-<id>.json`, Standby Set members by compose name (`provider`, `provider2`, `provider-hs`), `--expires-in 1h` by default. Nothing is published |
 | Gateway Withdrawal (tenant side) | `node scripts/handover.mjs --withdraw <lease.json>`: the same route and key, bearing the grant of the moment the lease file recorded at handover |
+| Rotation (tenant side) | `node scripts/rotate.mjs <lease.json>` in `infra/sandbox`: the handover tool's `rotate` (`provider/tools/grant/seal.mjs rotate`) over every member the lease file names, each reached at its `ilp_address` and sealed to the `connector_seal_key` its `conf/provider*.toml` pins; paid through the hub at `http://localhost:3200` from mnemonic account index 4 on its own channel store (`.toon-client/rotate-channels.json`). The new root secret is written into the lease file, beside the old one until every member has confirmed (§6.8). `provider-hs` is refused: its connector is reached over `anon`. The provider connectors terminate `<addr>.rotate` at 0 and the hub forwards the two clearnet providers' at 100 |
 | Root secret | minted by `scripts/spawn.mjs`, one per lease, written as `root_secret` into `.toon-client/spawn-<id>.json` (mode 0600) and nowhere else; the sandbox tenant's Nostr key is used for nothing on this path |
 | `.anyone` through the gateway | `socks5h://anon-client:9050`, the `hs` profile's buyer-side proxy, with the hidden provider's `status` dialled at its app on the compose network; a hand recipe on `make up-hs`, not a smoke |
 
@@ -943,4 +1015,4 @@ A tenant selecting for CI matches `["t", "docker"]`, and gets a workload whose `
 
 ## Appendix B. Wire fixtures
 
-Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a Lease Request per `op` with its packet body (§6.1), request and response bodies per route (§5, §6), a refusal per §5 error code in validation order, every one of them, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only, and the tenant's "key" is a root secret rather than a key pair, since a tenant signs nothing (§6.1). `fixtures/check.mjs` verifies the copy with no dependencies, and this repository's CI runs it on every push and pull request: it re-derives every `id`, re-signs every published event from the test keys and requires the same `sig`, checks every Lease Request against §6.1's shape and recomputes its Continuation Token with Node's own HKDF, rebuilds every packet body, and checks every error body against §5. Where the draft and the provider once disagreed, the fixtures' README says how each disagreement was settled; the spec text is now the normative side, and the only things the fixtures record that the spec does not fix are the ones the README lists as deliberately the provider's own (the HTTP status of a refusal, §5). Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image no source can serve. Milestone 3 adds the Warm Standby wire shapes: a Takeover event (§7.1), a Listing that prices standbys and the four paid routes it generates (§4.2, §5), and an availability request carrying `role` (§6.4); then the Standby Set roles themselves — one spawn content answered `role: "primary"` with access at index 0 and `role: "standby"` with none at index 1, and a `status` for each, the standby's in the `reserved` state (§6.2, §6.5, §6.7); then paying a reservation — `.standby.extend` adding an interval, and the `not_standby` and `not_running` refusals (§6.3); then the Takeover settled both ways, driven through the provider's real watchdog over its fake Directory — the `status` of a standby that won, `running` with `access` and `takeover.winner`, and of one that lost, still `reserved` and naming the winner (§6.5, §7.1); and finally the primary's self-stop — the `status` of a primary that five Liveness cadences in a row failed to reach a majority of its own Relay Set, `stopped` with no `access` and everything else about the lease unchanged (§6.7, §7.1). Milestone 4 adds the Hidden Provider's two directory shapes: a Profile with `hidden: true` and no `host` key, its `connector_url` at an `.anyone` host, and a Listing carrying `["l", "hidden:true", "toon.network"]` (§4.1, §4.2, §10); then its leases — the `spawn.ok` and `status.running` of that same provider, whose `access.host` is the lease's own `.anyone` address in place of an IP, on the same `ssh_port` and `host_port`s, with no IP anywhere in either answer (§6.2, §6.5, §10). Milestone 5 added the Gateway Grant and the reading it delegates. Milestone 6 (#56) changes the request itself: every `lease_request.*` and every `request_body` is now a plain JSON object of §6.1's six keys, signed by nobody and presenting a Continuation Token, with a fourth op — `standby`, the request a member of a Standby Set is sent — and `continuation.vector.json` states the derivation against a fixed root secret and two provider keys, so a second implementation checks its own HKDF before it sends anything; `error.bad_signature` is gone with the signature it refused. It then replaces the published Gateway Grant with a derived one (§6.5.1): `gateway_sub.vector.json` states that second derivation against a fixed token and a fixed moment, plus the same token one second later — which is why rotation is re-derivation — and `status.delegated.json` is a Workload Gateway's `status`, presenting the grant as its `continuation` and naming its moment in `gateway_expires_at`, answered byte for byte what `status.running` answers the tenant. `error.bad_grant.json` returns with a producer: a well-formed, unexpired grant of the *other* tenant's token, which delegates nothing here. `check.mjs` recomputes both derivations with Node's own HKDF and compares the two answers itself, and `gateway_grant.json` — the published event — is gone.
+Golden fixtures for every tenant-facing surface Milestone 1 implements live in [`fixtures/`](fixtures/README.md): a Lease Request per `op` with its packet body (§6.1), request and response bodies per route (§5, §6), a refusal per §5 error code in validation order, every one of them, one event per directory kind (§4, §6.7), and the routes a Listing generates (§5). They are generated by the provider's wire tests (`toon-provider`, `tests/wire_fixtures.rs`), verified byte-for-byte by its CI, and copied here with `make fixtures TOON_SPEC_DIR=…`, so the copy is exactly what the provider accepts and emits. Signatures use all-zero BIP-340 auxiliary randomness so they are reproducible; the keys are test-only, and the tenant's "key" is a root secret rather than a key pair, since a tenant signs nothing (§6.1). `fixtures/check.mjs` verifies the copy with no dependencies, and this repository's CI runs it on every push and pull request: it re-derives every `id`, re-signs every published event from the test keys and requires the same `sig`, checks every Lease Request against §6.1's shape and recomputes its Continuation Token with Node's own HKDF, rebuilds every packet body, and checks every error body against §5. Where the draft and the provider once disagreed, the fixtures' README says how each disagreement was settled; the spec text is now the normative side, and the only things the fixtures record that the spec does not fix are the ones the README lists as deliberately the provider's own (the HTTP status of a refusal, §5). Milestone 2 adds one fixture per §8 event — an Image Registry entry with both source types, a Blob Record with three parts, and a Template — each signed by a publisher test key of its own, plus one spawn per form of §6.2's `image` and the availability answer for an image no source can serve. Milestone 3 adds the Warm Standby wire shapes: a Takeover event (§7.1), a Listing that prices standbys and the four paid routes it generates (§4.2, §5), and an availability request carrying `role` (§6.4); then the Standby Set roles themselves — one spawn content answered `role: "primary"` with access at index 0 and `role: "standby"` with none at index 1, and a `status` for each, the standby's in the `reserved` state (§6.2, §6.5, §6.7); then paying a reservation — `.standby.extend` adding an interval, and the `not_standby` and `not_running` refusals (§6.3); then the Takeover settled both ways, driven through the provider's real watchdog over its fake Directory — the `status` of a standby that won, `running` with `access` and `takeover.winner`, and of one that lost, still `reserved` and naming the winner (§6.5, §7.1); and finally the primary's self-stop — the `status` of a primary that five Liveness cadences in a row failed to reach a majority of its own Relay Set, `stopped` with no `access` and everything else about the lease unchanged (§6.7, §7.1). Milestone 4 adds the Hidden Provider's two directory shapes: a Profile with `hidden: true` and no `host` key, its `connector_url` at an `.anyone` host, and a Listing carrying `["l", "hidden:true", "toon.network"]` (§4.1, §4.2, §10); then its leases — the `spawn.ok` and `status.running` of that same provider, whose `access.host` is the lease's own `.anyone` address in place of an IP, on the same `ssh_port` and `host_port`s, with no IP anywhere in either answer (§6.2, §6.5, §10). Milestone 5 added the Gateway Grant and the reading it delegates. Milestone 6 (#56) changes the request itself: every `lease_request.*` and every `request_body` is now a plain JSON object of §6.1's six keys, signed by nobody and presenting a Continuation Token, with a fourth op — `standby`, the request a member of a Standby Set is sent — and `continuation.vector.json` states the derivation against a fixed root secret and two provider keys, so a second implementation checks its own HKDF before it sends anything; `error.bad_signature` is gone with the signature it refused. It then replaces the published Gateway Grant with a derived one (§6.5.1): `gateway_sub.vector.json` states that second derivation against a fixed token and a fixed moment, plus the same token one second later — which is why rotation is re-derivation — and `status.delegated.json` is a Workload Gateway's `status`, presenting the grant as its `continuation` and naming its moment in `gateway_expires_at`, answered byte for byte what `status.running` answers the tenant. `error.bad_grant.json` returns with a producer: a well-formed, unexpired grant of the *other* tenant's token, which delegates nothing here. `check.mjs` recomputes both derivations with Node's own HKDF and compares the two answers itself, and `gateway_grant.json` — the published event — is gone. Milestone 7 (#69) adds **rotation** (§6.8, #70): `lease_request.rotate` and `rotate.ok`, whose `next` is the token a fresh root secret (`constants.rotated_tenant`) derives here; every refusal the route can give, in the order §6.8 weighs them, as `error.<code>.<which>` — a gateway's grant asserted on `rotate`, a malformed `next`, an unknown workload, another tenant's token, an ended lease, a `next` equal to the current token, and the replay of `rotate.ok` itself; and what the lease answers afterwards — `status.rotated`, the new token, byte for byte `status.running`, `error.not_tenant.rotated`, the replaced token, and `error.bad_grant.rotated`, the very grant `status.delegated` was admitted with. `check.mjs` recomputes `next` with Node's own HKDF and requires that no token the fixtures know, nor any grant of one, appears in any answer. It also adds the paged Blob Record (§8.2, §11 item 2, #73): `registry.blob_record.paged.json` is the SAME application layer as `registry.blob_record.json`, published a second time with `pages` instead of `parts`, its `page_bytes` field carrying each page's own bytes so `check.mjs` can check its `sha256` and its `parts` count without a network; `spawn_image.digest_only.paged.json` is a spawn that resolves the same image through it, over a provider whose Relay Set holds no inline record for that blob at all; and `registry.blob_record.both_forms.json` is the record §8.2's one-of rule refuses — both `parts` and `pages` present at once.
