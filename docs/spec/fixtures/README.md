@@ -120,6 +120,8 @@ A fourth shape — `reference` together with `registry_entry`, a `digest` that i
 | 13 | `error.bad_grant.json` | 403 | Status asserting a `gateway_expires_at` that has not passed, presenting a well-formed Gateway Grant of the *other* tenant's token. Every delegation defect is this one code (§6.5.1) | §6.5.1 step 3 |
 Two of these codes also answer a mis-addressed Standby Set spawn: `invalid_request` for every role failure of §6.2 step 3, and `wrong_listing_version` for a `.standby` spawn on a listing that prices no standby. See *Warm Standby* below.
 
+The error table above is every §5 code. **`bad_grant`** and **`not_tenant`** are the pair worth reading together: they are the same lease, the same route and two values that are both wrong for it, and what tells them apart is not the defect but whether the request *asserted* a delegation — `gateway_expires_at` present is `bad_grant`, absent is `not_tenant` (§6.5.1).
+
 **Rotation's refusals** (§6.8), in the order the route weighs them, and what the lease answers the tokens a rotation retired. Where one code has several fixtures the case is `<code>.<which>`, so each still files under `error.<code>`, and `check.mjs` reads the code off the part before the dot.
 
 | # | File | Status | How it was produced | Step |
@@ -135,8 +137,6 @@ Two of these codes also answer a mis-addressed Standby Set spawn: `invalid_reque
 | — | `error.bad_grant.rotated.json` | 403 | `status` presenting the very grant `status.delegated` was admitted with, derived from the replaced token | §6.5.1 step 3 |
 
 `check.mjs` recomputes `next` from `rotated_tenant`'s root secret, requires `next` to differ from the presented token everywhere but the same-token refusal, requires the replay to be `rotate.ok`'s body byte for byte, and — on every fixture, not only these — requires that no token the fixtures know, nor a grant of one, appears anywhere in an answer.
-
-The error table above is every §5 code. **`bad_grant`** and **`not_tenant`** are the pair worth reading together: they are the same lease, the same route and two values that are both wrong for it, and what tells them apart is not the defect but whether the request *asserted* a delegation — `gateway_expires_at` present is `bad_grant`, absent is `not_tenant` (§6.5.1).
 
 **Directory events** (`event`, parsed `content`, `nip01_serialization`)
 
