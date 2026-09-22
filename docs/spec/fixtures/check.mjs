@@ -541,15 +541,57 @@ for (const file of files) {
         report(type === 'toon-store' || type === 'oci', `${file}: blobs[${i}] has a source type this milestone defines`);
       }
     }
-    if (kase === 'blob_record') {
+    if (kase.startsWith('blob_record')) {
       report(d === doc.content.digest, `${file}: d is the blob's digest`);
       report(tagValue(doc.event, 'x') === doc.content.digest.replace(/^sha256:/, ''), `${file}: x tag is the blob digest's hex`);
-      const total = doc.content.parts.reduce((sum, p) => sum + p.size, 0);
-      report(total === doc.content.size, `${file}: the parts' sizes sum to the blob's size`);
-      report(
-        doc.content.parts.slice(0, -1).every((p) => p.size === doc.content.part_size),
-        `${file}: every part but the last is part_size bytes`,
-      );
+
+      // Exactly one of `parts` (inline) or `pages` (large blob, spec §8.2,
+      // §11 item 2) — except the one fixture that exists to be the shape
+      // this rule refuses.
+      const hasParts = Array.isArray(doc.content.parts);
+      const hasPages = Array.isArray(doc.content.pages);
+      if (kase === 'blob_record.both_forms') {
+        report(hasParts && hasPages, `${file}: carries BOTH parts and pages — the shape §8.2's one-of rule refuses`);
+      } else {
+        report(hasParts !== hasPages, `${file}: carries exactly one of parts or pages (§8.2, §11 item 2)`);
+      }
+
+      // The ordered part list, however this record carries it: `parts`
+      // directly, or `pages` concatenated in order after each page's own
+      // digest and part count are checked — exactly what a reader does
+      // before trusting a single part from a page (§8.2).
+      let parts = hasParts ? doc.content.parts : [];
+      if (hasPages) {
+        let pageParts = [];
+        for (const [i, page] of doc.content.pages.entries()) {
+          const bytes = doc.page_bytes?.[page.txid];
+          report(typeof bytes === 'string', `${file}: page_bytes carries page ${i} (${page.txid})'s own bytes`);
+          if (typeof bytes !== 'string') continue;
+          const got = sha256(Buffer.from(bytes, 'utf8')).toString('hex');
+          report(got === page.sha256, `${file}: page ${i} (${page.txid}) hashes to its recorded sha256`);
+          let parsed = null;
+          try {
+            parsed = JSON.parse(bytes);
+          } catch {
+            /* reported below */
+          }
+          report(Array.isArray(parsed), `${file}: page ${i} (${page.txid})'s bytes are a JSON array of part objects`);
+          if (Array.isArray(parsed)) {
+            report(parsed.length === page.parts, `${file}: page ${i} (${page.txid}) lists its recorded parts count`);
+            pageParts = pageParts.concat(parsed);
+          }
+        }
+        if (!hasParts) parts = pageParts; // both_forms already has its own `parts`; leave it alone
+      }
+
+      if (parts.length > 0 && kase !== 'blob_record.both_forms') {
+        const total = parts.reduce((sum, p) => sum + p.size, 0);
+        report(total === doc.content.size, `${file}: the parts' sizes sum to the blob's size`);
+        report(
+          parts.slice(0, -1).every((p) => p.size === doc.content.part_size),
+          `${file}: every part but the last is part_size bytes`,
+        );
+      }
     }
     if (kase === 'template') {
       report(typeof d === 'string' && d.length > 0, `${file}: d is the template name`);
