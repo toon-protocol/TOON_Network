@@ -36,6 +36,10 @@ _Avoid_: Master key, seed, private key, lease key
 The secret a tenant derives from a lease's root secret for one provider and presents on every later request to it, by which that provider knows the same party that took the lease is asking again. One per provider, so no member of a standby set can act as the tenant against another.
 _Avoid_: Session token, API key, bearer token, password, tenant secret
 
+**Rotation**:
+The act of replacing a lease's continuation token at one provider, after which the old token and every gateway grant derived from it no longer work.
+_Avoid_: Revocation, re-key, reset
+
 **Lease Interval**:
 The fixed period of a lease that one payment buys, set by the listing.
 _Avoid_: Tick, period, billing cycle
