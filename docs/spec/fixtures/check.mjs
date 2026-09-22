@@ -186,7 +186,12 @@ const ERROR_CODES = [
   'unknown_workload', 'wrong_listing_version', 'not_tenant', 'workload_id_taken',
   'refused_image', 'no_capacity', 'no_matching_arch', 'invalid_request',
   'expired', 'not_standby', 'not_running', 'stale_request', 'bad_grant',
+  'unavailable',
 ];
+
+/** The one code that is never about the request (spec §5): it carries a
+ *  5xx rather than a 4xx, because nothing the tenant did was wrong. */
+const RETRY_CODE = 'unavailable';
 
 /** Spec §4.4's GPU label grammar: `gpu:<vendor>-<model>`, where the value
  *  after `gpu:` matches `[a-z0-9]+(-[a-z0-9]+)*` in full and the vendor is
@@ -838,7 +843,12 @@ for (const file of files) {
     const code = kase.split('.')[0];
     report(body.error === code, `${file}: response error code is ${code}`);
     report(typeof body.message === 'string' && body.message.length > 0, `${file}: response carries a message`);
-    report(Number.isInteger(doc.response_status) && doc.response_status >= 400 && doc.response_status <= 499, `${file}: response_status is a 4xx (this provider's; a tenant reads error, not the status)`);
+    report(
+      code === RETRY_CODE
+        ? doc.response_status === 503
+        : Number.isInteger(doc.response_status) && doc.response_status >= 400 && doc.response_status <= 499,
+      `${file}: response_status is a 4xx (this provider's; a tenant reads error, not the status) — or, for ${RETRY_CODE}, a 5xx, since that code is never about a mistaken request`,
+    );
   }
 
   // Availability answers 200 either way; a refusal is the answer, with a §5

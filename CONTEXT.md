@@ -163,3 +163,25 @@ _Avoid_: Registration, enrolment, onboarding, grant publication
 **Gateway Withdrawal**:
 The message by which a tenant stops a workload gateway serving a workload, which ends its serving but not its grant.
 _Avoid_: Revocation, deregistration, cancellation
+
+### Console
+
+**Console**:
+The local app through which an account finds providers, funds its payment channels and manages its workloads. The dashboard, landing page and docs are parts of it, or of its public site.
+_Avoid_: Frontend, dashboard (for the whole app), client, wallet app
+
+**Account**:
+A Nostr identity that holds a person's chain seed and the root secrets of their leases, and signs for them in the console. An account is the tenant of each of its leases and usually their payer, but nothing a provider sees links a lease to its account.
+_Avoid_: User, customer, profile, login, wallet
+
+**Signer**:
+Whatever holds an account's Nostr key and signs for it: a remote signer the account connects, or the console's local keystore.
+_Avoid_: Wallet, extension, key manager
+
+**Chain Seed**:
+The mnemonic an account seals to itself, from which its payer keys on every settlement chain are derived. It is not derived from the account's Nostr key, so it works with a signer that never reveals that key.
+_Avoid_: Wallet, master key, root secret, mnemonic (unqualified)
+
+**Lease Vault**:
+An account's records, each sealed to itself and kept on its own relays, that hold the root secret of each of its leases, so the leases can be managed from any machine the account signs in on.
+_Avoid_: Backup, keystore, lease file

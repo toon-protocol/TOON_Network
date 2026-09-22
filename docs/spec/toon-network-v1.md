@@ -263,12 +263,13 @@ Every response is JSON. Errors use this shape — exactly these two keys — and
 { "error": "<code>", "message": "<human readable>" }
 ```
 
-Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workload_id_taken`, `refused_image`, `no_capacity`, `no_matching_arch`, `invalid_request`, `expired`, `not_standby`, `not_running`, `stale_request`, `bad_grant`.
+Error codes: `unknown_workload`, `wrong_listing_version`, `not_tenant`, `workload_id_taken`, `refused_image`, `no_capacity`, `no_matching_arch`, `invalid_request`, `expired`, `not_standby`, `not_running`, `stale_request`, `bad_grant`, `unavailable`.
 
 - **`not_tenant`** is a request whose Continuation Token is not the one the lease was taken with — wrong, or absent altogether (§6.1). The two are one answer on purpose: both assert no authority over the lease, and telling them apart would leave a prober knowing which half of its guess was wrong.
 - **`bad_grant` vs `not_tenant`:** `bad_grant` is a `status` whose asserted Gateway Grant does not apply to this lease (§6.5.1). **The assertion decides which of the two a request hears, not the defect:** a request naming a `gateway_expires_at` is `bad_grant`, one naming none is `not_tenant`. One says *you are not the tenant*, the other *your delegation does not apply here*, and one code covers every way a delegation can fail — so a Workload Gateway learns nothing about a lease from being refused.
+- **`unavailable`** means the provider could not do this right now: nothing changed, and the tenant should retry. It is the one code that is never about the request — every other code says the request was wrong in some way, and this one can only follow every other check passing. A provider answers it when an effect it MUST make before it may confirm the request fails to happen, e.g. a write to disk (§6.8 names the first case: a rotation it cannot persist). It carries a 5xx rather than a 4xx (below), and its general form here is deliberate: a later route MAY adopt it for an effect of its own that fails the same way, rather than treat the failure as a refusal of the request.
 
-- **The body is the contract; the HTTP status is not.** A tenant reads `error`, never the status: the connector carries the response inside an ILP packet, and whether an HTTP status survives that at all is the connector's business. A provider MAY answer a refusal with any 4xx it finds fitting (the reference provider uses 400/403/404/409/422; Appendix B's fixtures record its mapping as `response_status`), and a tenant MUST NOT branch on it. `message` is for people and MAY change without notice.
+- **The body is the contract; the HTTP status is not.** A tenant reads `error`, never the status: the connector carries the response inside an ILP packet, and whether an HTTP status survives that at all is the connector's business. A provider MAY answer a refusal with any 4xx it finds fitting (the reference provider uses 400/403/404/409/422; Appendix B's fixtures record its mapping as `response_status`), or, for `unavailable` alone, a 5xx (the reference provider uses 503) since that code is never about a mistaken request — and a tenant MUST NOT branch on it either way. `message` is for people and MAY change without notice.
 
 ---
 
@@ -508,6 +509,8 @@ A tenant may replace the Continuation Token a provider holds for a lease — bec
 
 **Effect.** The provider replaces the stored token with `next` and **MUST persist the lease before it answers**, so a crash straight after a rotation cannot bring the old token back. From that moment the old token is `not_tenant` on every route, and every Gateway Grant derived from it is `bad_grant`, because a provider recomputes a grant from whatever token it stores (§6.5.1). The provider keeps no second value, there is **no grace period**, and nothing is published. Nothing else about the lease changes: its role, state, `expires_at`, `access`, `template` and Standby Set are what they were.
 
+A rotation is a revocation, so the provider MAY say `rotated: true` only once `next` is on disk. **If the persist fails, the provider MUST restore the token it found in memory and answer `unavailable`** (§5) instead of `rotated: true`: nothing changed, the old token still works — in memory and on disk, before the failed persist and after a restart alike — and the tenant retries with the same `next` once saving works again.
+
 **Response:** `{ "workload_id", "rotated": true }`. It carries no token, old or new.
 
 **Validation**, in order, refusing with the first failing code:
@@ -518,6 +521,7 @@ A tenant may replace the Continuation Token a provider holds for a lease — bec
 4. §6.1.2 step 4: `continuation` is the lease's own token, compared in constant time — else `not_tenant`. **Step 4 does not branch on this route**, exactly as on `terminate` (§6.6): a Gateway Grant presented without `gateway_expires_at` is a value that is not the lease's token, and only the lease's own token may rotate it, so a gateway can never rotate a lease out from under its tenant.
 5. The lease has not ended, however it ended, an `expires_at` already past included — else `expired` (§6.3). The tenant learns the lease is gone rather than that its token is wrong.
 6. `next` is not the token the lease already holds — else `invalid_request`: a no-op must never look like a success. It is weighed only after step 4, so the answer says nothing to a request that does not already hold that token.
+7. The lease is persisted with `next` in place — else `unavailable`. Unlike steps 1 to 6, this is not about the request: every input has already been proven good, and only the write can still fail.
 
 A lease that is `provisioning`, `running`, `stopped` or `reserved` can be rotated (§6.7). Like the other free routes, `rotate` SHOULD be rate-limited (§5): every rotation it accepts is a write.
 
@@ -525,7 +529,7 @@ A lease that is `provisioning`, `running`, `stopped` or `reserved` can be rotate
 
 **A Standby Set is rotated member by member.** One rotate request per member, each naming only that member and presenting only that member's token, exactly as every other request (§6.1, §7). Tokens are per member already, so a set rotated at some members and not yet at others is a valid state that breaks no invariant, and a member the tenant cannot reach right now does not block the others. A rotation at one member changes nothing at any other. The tenant keeps both root secrets until every member has confirmed.
 
-**A lost answer.** A rotate is not retried to find out whether it worked: the same request again is `stale_request`, and a new one presenting the old token after the first took effect is `not_tenant`. A tenant that did not see the answer sends `status` presenting `next`: acceptance means the rotation took effect, and `not_tenant` means it did not and the old token still holds.
+**A lost answer.** A rotate is not retried to find out whether it worked: the same request again is `stale_request`, and a new one presenting the old token after the first took effect is `not_tenant`. A tenant that did not see the answer sends `status` presenting `next`: acceptance means the rotation took effect, and `not_tenant` means it did not and the old token still holds. `unavailable` is not a lost answer — the request WAS answered, and refused — so a tenant that sees it retries directly with a fresh request presenting the same token and naming the same `next`, rather than asking `status`.
 
 **Workload Gateways.** After a rotation, every rotated member refuses a grant of the old token `bad_grant`. A tenant that wants to keep its gateway derives grants from the new tokens and hands them over again (§12.1), and the ordinary admission round replaces what the gateway holds; rotating and changing gateways are separate choices.
 
@@ -662,6 +666,8 @@ A fetch MUST:
 - check each part's `sha256` and size;
 - concatenate the parts in order — a paged record's, page by page, part list by part list, exactly as an inline record's;
 - check the whole blob's digest.
+
+A reader MUST NOT trust a declared size — a Blob Record's `size`, a part's or a page's — before it is verified, and MAY bound what it reads: how much it reserves for a blob before fetching a single part, and how much of any one read it accepts, so that neither a record's own numbers nor a source's behaviour can force it past its means (Milestone 7, #79). Before fetching a single page, a reader also MUST check a paged record's page count and each page's `parts` against the part count `size` and `part_size` already imply (§8.2) — the same check an inline record's `parts` length gets — so a record cannot force an unbounded number of page reads merely by listing more pages than its own `size` could ever hold parts for.
 
 A blob that fails verification is discarded, and the next source is tried — a Blob Record carrying both `parts` and `pages`, or neither (§8.2), is discarded the same way, without either field being trusted. A blob that no source can serve fails the spawn with `refused_image`, or `no_capacity` if the disk is full. Verified blobs SHOULD be cached across leases. `availability` (§6.4) answers for a paged Blob Record exactly as it does for an inline one: asking stays free and accurate either way.
 
