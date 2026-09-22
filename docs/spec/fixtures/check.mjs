@@ -204,6 +204,42 @@ function report(ok, what) {
 
 const constants = load('constants.json');
 
+// Spec §7.2's normative timing table, checked against the `timing` block the
+// reference provider's own constants produced (TOON_Network #71). Every
+// value here but `liveness_cadence_s` — the one row a provider chooses, in
+// its Profile — is fixed by the protocol, so a second implementation that
+// disagrees with any of them is checked here rather than discovered on the
+// wire.
+{
+  const timing = constants.timing;
+  const TABLE = {
+    liveness_expiry_cadences: 5,
+    takeover_trigger_cadences: 1,
+    settle_window_cadences: 2,
+    self_stop_cadences: 5,
+    request_window_s: 300,
+    sweep_interval_s: 30,
+  };
+  report(
+    Number.isInteger(timing?.liveness_cadence_s) && timing.liveness_cadence_s > 0,
+    'constants.timing: liveness_cadence_s is a positive integer (the provider\'s own Profile value)',
+  );
+  for (const [key, value] of Object.entries(TABLE)) {
+    report(timing?.[key] === value, `constants.timing: ${key} is ${value} (spec §7.2)`);
+  }
+  // The invariant spec §7.2 states: self-stop (5c) <= liveness expiry +
+  // trigger (6c) < Takeover start (6c + 2c = 8c). Checked on the fixture's
+  // own values rather than assumed, so a future change to any one of them
+  // that breaks the invariant fails here first.
+  const selfStop = timing?.self_stop_cadences;
+  const trigger = timing?.liveness_expiry_cadences + timing?.takeover_trigger_cadences;
+  const takeoverStart = trigger + timing?.settle_window_cadences;
+  report(
+    selfStop <= trigger && trigger < takeoverStart,
+    `constants.timing: the invariant self-stop (${selfStop}c) <= liveness expiry + trigger (${trigger}c) < Takeover start (${takeoverStart}c) holds`,
+  );
+}
+
 // The test keys: every fixture event is signed by one of them, so every one
 // can be re-signed. Each public key must derive from its secret key first.
 // Every key `constants.json` publishes is taken, not a fixed list, so a key

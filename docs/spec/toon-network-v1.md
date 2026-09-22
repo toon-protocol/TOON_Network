@@ -178,7 +178,7 @@ A Listing of a Hidden Provider MUST carry `["l", "hidden:true", "toon.network"]`
 ### 4.3 Liveness: kind `10433` (replaceable)
 
 - **Cadence:** one per provider, republished every `liveness_cadence_s` seconds.
-- **Expiration:** it MUST carry `["expiration", now + 5 × liveness_cadence_s]` (ADR 0007).
+- **Expiration:** it MUST carry `["expiration", now + <Liveness expiry>]`, the value §7.2's table fixes (ADR 0007).
 - **Not the ephemeral lane:** it MUST NOT be sent on the free ephemeral lane.
 
 Content is JSON:
@@ -289,7 +289,7 @@ A Lease Request is a plain JSON object carried in request bodies. Nobody signs i
 - **`request_id`** is 32 random bytes chosen by the tenant, as 64 lowercase hex characters. Nothing is hashed and nothing is canonically serialised on either side, so two implementations have no serialisation to disagree about. The replay set keys on it.
 - **`op`** says what the request asks for, and MUST be the one the route serves: `spawn` on `<addr>.<listing>.v<n>.spawn`, `standby` on `<addr>.<listing>.v<n>.standby`, `status` on `<addr>.status`, `terminate` on `<addr>.terminate`. Anything else is `invalid_request`.
 - **`provider`** is **exactly one** provider's public key, on every op — a spawn that forms a Standby Set included (§7). A provider MUST refuse a request naming any other key. A tenant forming a set sends one request to each member, each naming only that member.
-- **`expiration`** is unix seconds. A provider MUST refuse if `now > expiration`, and SHOULD refuse if `expiration` is more than 300 s ahead of `now` (`stale_request` for either).
+- **`expiration`** is unix seconds. A provider MUST refuse if `now > expiration`, and SHOULD refuse if `expiration` is more than the Request window ahead of `now` (§7.2; `stale_request` for either).
 - **`continuation`** is the lease's Continuation Token for this provider. It MAY be absent, which is a request asserting no authority over the lease — refused, never read as an unauthenticated success (below).
 - **`content`** is the op's own JSON object (§6.2, §6.5, §6.6). A field this spec does not name, anywhere in it, MUST be refused as `invalid_request`, never dropped (ADR 0004).
 
@@ -484,7 +484,7 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 - **Reserved:** a Warm Standby before Takeover: the capacity is held and paid for, nothing runs, and the answer carries no `access`. The `takeover` edge does not change the role — a standby that runs its workload still answers `role: "standby"` — and adds `takeover.winner` to the answer of every member the race settled at (§6.5), the losers included, which stay `Reserved`.
 - **Stopped:** a primary that stopped its own workload under §7.1's self-stop rule. The lease is live and paid to its `expires_at` like any other — it holds its capacity slot and its `workload_id`, `.extend` still adds an interval at the running price, and the sweep still ends it — but the workload is off, so the answer carries no `access`. Only a primary reaches it, and only §7.1 moves a lease into or out of it. A provider MUST persist it: a restart must not start again what the rule stopped.
 - **Reservations count:** a `Reserved` lease holds its `workload_id` and its capacity slot exactly as a running one does, so Liveness `available` (§4.3) and `availability` (§6.4) both subtract it.
-- **Expiry:** the provider MUST sweep at least every 30 s and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
+- **Expiry:** the provider MUST sweep at least as often as the Expiry sweep floor §7.2 fixes, and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
 - **Eviction:** a provider MAY evict a lease for abuse, policy or maintenance. It MUST publish an Eviction Notice.
 - **Eviction Notice** (kind `4433`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tags `["x", "<workload_id>"]` and `["L", "toon.network"]` (the label every TOON Network event carries, §4). `reason` is one of `abuse` (the workload abused this provider or something reachable from it), `policy` (it broke a policy the provider states outside this protocol), `maintenance` (the provider needs the capacity back) or `other`; `message` says what happened in words; with `other` it is all a reader has to go on, so it SHOULD not be empty. A reader MUST NOT refuse a notice for a `reason` it does not know: a later version may add one.
 - **Persistence:** the provider MUST persist running leases and reservations across its own restarts, each with its Continuation Token (§6.1.1). A restart that forgot the token would leave a paid workload running that nobody could read, extend or stop.
@@ -503,16 +503,16 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 
 A standby watches the primary's Liveness on the **primary's** Relay Set, read from the primary's Provider Profile.
 
-1. **Trigger:** the primary's Liveness is expired or absent on a strict majority of that Relay Set (one of one, two of three), continuously for `liveness_cadence_s` seconds. A relay the standby cannot read holds no Liveness it can see, and counts as absent. A majority that is live again inside the cadence, even once, restarts the count.
+1. **Trigger:** the primary's Liveness is expired or absent on a strict majority of that Relay Set (one of one, two of three), continuously for the Takeover trigger §7.2 fixes. A relay the standby cannot read holds no Liveness it can see, and counts as absent. A majority that is live again inside the cadence, even once, restarts the count.
 2. **Announce:** the standby publishes a Takeover event to the primary's Relay Set.
    - Kind `30433` (addressable), `d = <workload_id>`. Addressable, so a standby leaves one claim per workload rather than a history, and step 3 reads a set of claimants.
    - Content: `{ "workload_id": "…", "primary": "<pubkey>" }`, where `primary` is the hex pubkey at `standby_set[0]`.
    - Signed by the **standby** that claims the workload, never by the primary.
-3. **Settle:** 2 × `liveness_cadence_s` after its **own** announcement — the cadence being the primary's, as its Profile states it — the standby queries kind `30433` events for `d = <workload_id>` from **pubkeys in `standby_set`**, on the primary's Relay Set, where every claim was published. Events from any other signer are ignored, and so are claims whose `primary` is not the primary this round is against: a claim naming an earlier primary belongs to an earlier race, already settled. The standby's own claim counts whether or not a relay returns it. The winner has the earliest `created_at`; a tie goes to the lower index in `standby_set`. Nothing starts before the window has elapsed, however early the other claims are visible.
+3. **Settle:** the Settle window §7.2 fixes, after its **own** announcement — the cadence being the primary's, as its Profile states it — the standby queries kind `30433` events for `d = <workload_id>` from **pubkeys in `standby_set`**, on the primary's Relay Set, where every claim was published. Events from any other signer are ignored, and so are claims whose `primary` is not the primary this round is against: a claim naming an earlier primary belongs to an earlier race, already settled. The standby's own claim counts whether or not a relay returns it. The winner has the earliest `created_at`; a tie goes to the lower index in `standby_set`. Nothing starts before the window has elapsed, however early the other claims are visible.
 4. **If it won:** the standby starts the workload from the image exactly as a spawn would, and the lease becomes Running; `status` reports `running`, `access` and `takeover.winner` (§6.5). Winning buys no time: from then on the lease needs a `.extend` (full price) before its current `expires_at`, or the sweep ends it with `expiry`. `.standby.extend` is refused `not_standby` (§6.3).
 5. **If it lost:** the standby stays Reserved — still paid on `.standby.extend`, still refused `not_running` on `.extend` — reports `takeover.winner`, and watches the winner as its new primary: the winner's Profile, the winner's Relay Set, a fresh count of silence. It forgets its own claim, so that if the winner goes silent too it announces again, naming the winner as `primary`, and the set survives a second failure.
 
-**Primary self-stop:** a primary that cannot publish Liveness to a strict majority of its own Relay Set for 5 × `liveness_cadence_s` MUST stop its workload, so that a partitioned primary does not keep running beside a Takeover.
+**Primary self-stop:** a primary that cannot publish Liveness to a strict majority of its own Relay Set for the Primary self-stop §7.2 fixes MUST stop its workload, so that a partitioned primary does not keep running beside a Takeover.
 
 - **Counting:** each publication of Liveness (§4.3) reports which relays of the Relay Set took it; a cadence counts against the primary unless a strict majority took it. A publication that could not be attempted at all counts the same way: no relay took it. One publication that reached a majority, anywhere inside the five, restarts the count. A provider with no Relay Set has no majority to lose and is not bound by the rule.
 - **Which leases:** every lease it holds as the primary of a Standby Set. A standalone lease (§6.2) is never stopped by this rule: no standby is waiting to take it over.
@@ -521,6 +521,26 @@ A standby watches the primary's Liveness on the **primary's** Relay Set, read fr
 - **After a restart of the provider:** a provider that comes back holding a primary lease with a `standby_set` MUST make the same query before it treats that lease's workload as live, and stop the workload if a Takeover exists. A provider whose process was down is the partition this rule is about, and it counted no cadences while it was.
 
 **No state moves on Takeover.** The standby starts from the image, and data replication is the workload's own job.
+
+### 7.2 Timing constants
+
+Every timing value in this protocol is fixed here, in one normative table, in units of the primary's own `liveness_cadence_s` (**c**) or in seconds. §4.3, §6.1, §6.7 and §7.1 apply these values; this is where they are set, and where a second implementation reads all of them from one place rather than five sections.
+
+| Constant | Value | Chosen by |
+|---|---|---|
+| Liveness cadence *c* | `liveness_cadence_s` | provider, in its Profile |
+| Liveness expiry | 5*c* after `created_at` | protocol |
+| Takeover trigger | expired on a strict majority for 1*c* | protocol |
+| Settle window | 2*c* from the standby's own announcement | protocol |
+| Primary self-stop | 5 consecutive cadences without a majority | protocol |
+| Request window | `expiration` ≤ now + 300 s | protocol |
+| Expiry sweep | at least every 30 s | protocol (a floor, not a period) |
+
+Only `liveness_cadence_s` is a provider's to choose, in its Profile (§4.1). Every other row is fixed by the protocol, so two members of a Standby Set run by different operators agree on when a Takeover happens without agreeing on anything else. The values are unchanged from earlier milestones (§11, item 3): this section makes them normative and does not re-tune any of them. **Changing any one of them is an ADR.**
+
+**The invariant.** self-stop (5*c*) ≤ liveness expiry + trigger (6*c*) < Takeover start (6*c* + 2*c* = 8*c*). A primary that has failed to reach a majority of its own Relay Set for 5*c* has already stopped its workload (self-stop) before any standby's Takeover can start: a standby's own trigger cannot fire before the primary's Liveness has been silent for one cadence beyond its expiry (6*c*), and the settle window it then waits out runs a further 2*c*, to 8*c*. So in the idealised case — clocks and relay reads landing exactly on the cadences they are due — a stopped primary is never running beside the standby that takes over. **ADR 0010's "may briefly run two copies" is amended to say so:** it survives only for clock skew and relay lag that carries the primary or a standby's view of it past a cadence boundary the other has not yet reached, never as the ordinary case.
+
+**The outage window.** From self-stop (5*c*) to Takeover start (8*c*) is about 3*c* in the idealised case, during which the workload runs nowhere: the primary has stopped it and the standby has not yet started it. A Workload Gateway resolving in this gap hears every member answer about the lease with nothing running, so it answers `503 no_running_member` (§12.3, §12.4) — not `member_unreachable`: every member is reachable and answered, and none of them is the target yet. §12.7's "What a tenant sees" states the same figure for a tenant.
 
 ---
 
@@ -632,9 +652,9 @@ A Hidden Provider's workload MAY be given a public name by a Workload Gateway (�
 
 1. **Label vocabulary:** §4.4 fixes `isolation`, `arch`, and the `docker` and `nesting` capabilities. Still open: `gpu:<model>` naming, and how a capability beyond the `x-` prefix gets added.
 2. **Large Blob Records:** a record over one store data item (~700 parts at 100 KiB) needs paging or a larger `part_size`.
-3. **Timing constants:** the 300 s request window, the 30 s sweep, the one-cadence takeover trigger, the two-cadence settle window (measured from each standby's own announcement, so two standbys that saw the silence at different instants settle at different instants) and the five-cadence primary self-stop are first guesses.
-4. **Runtime route writes:** the connector has none for terminated routes, so every listing change restarts it.
-5. **Template expansion:** v1 has the tenant expand Templates. An earlier walkthrough described the provider reading the Template; confirm which.
+3. **Timing constants. Closed, 2026-09-22 (Milestone 7, #71).** They were first guesses; they are normative now. **§7.2** states one table — the request window, the sweep floor, the takeover trigger, the settle window and the primary self-stop, all as multiples of the provider-chosen `liveness_cadence_s` where §7.1 and §6.7 already had them — the invariant that keeps a partitioned primary from running beside the standby that takes over, and the outage window (about 3*c*) a Workload Gateway spends answering `no_running_member` (§12.3, §12.7). The values themselves are unchanged; changing one is its own ADR. ADR 0010 is amended to state the invariant and where "may briefly run two copies" still applies.
+4. **Runtime route writes. Closed, 2026-09-22 (Milestone 7, #71), out of scope.** The connector has none for terminated routes, so every listing change still restarts it (ADR 0009). A runtime write is the connector's mechanism to build, not this protocol's, so TOON Network stops tracking a change it cannot make; the connector repository owns it if it is ever built.
+5. **Template expansion. Closed, 2026-09-22 (Milestone 7, #71).** The tenant expands a Template into a spawn; a provider never reads one, and `template` in a spawn stays informational (§8.3). The earlier walkthrough that described a provider reading a Template does not describe v1.
 6. **Hostnames and TLS. Closed, 2026-09-17 (Milestone 5, #46).** They stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`, which **§12** now specifies in full — what a gateway is, how it is told what to serve, the canonical hostname it derives, its error page, resolution across a Standby Set, what a forwarded request carries, a readable name, how it follows the workload through a Takeover, and a workload on a Hidden Provider. The authority it needed is a **delegation of `status`** (§6.5). ADR 0013 is *Accepted*. Milestone 6 (#56) changes how that delegation is carried — a **Gateway Grant** derived from the lease's Continuation Token and handed to the gateway directly (§6.5.1), rather than an event the tenant signs and publishes — without reopening the decision. What a gateway is told besides the grant, chiefly which of a spawn's `ports` is the HTTP one, travels with it in the **Gateway Handover** that milestone's later tickets specify.
 7. **Later rounds.** Reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
 
@@ -873,7 +893,7 @@ A withdrawal buys no work anywhere else — nobody is asked, nothing is dialled 
 
 A body a gateway could not read as either message — malformed JSON, or too large to be one — is answered `invalid_handover` (§12.1), because which of the two it was meant to be is not yet known. `not_withdrawn` covers all three of its cases, because the tenant's next step is the same for each: derive the grant the gateway holds now and send it again. It MUST NOT be collapsed with `withdrawal_failed`, for the reason §12.1 keeps `not_admitted` and `admission_failed` apart: the first is a fact about the grant borne and the second about this gateway, and a tenant told the wrong one derives a value that was never the problem. A gateway MAY log which it was; what it MUST NOT do is put a grant, whole or in part, into either answer or into anything it logs, exactly as at admission (§12.1, §6.1.1).
 
-**What a tenant sees.** Two timings follow from this section, and a tenant should be told them rather than left to measure them. After a Takeover, a URL moves roughly one settle window after the claim was published — `2 × liveness_cadence_s` from its `created_at`, plus whatever a gateway's own polling granularity adds — and it keeps answering from the old member throughout, until the member running it can be found. After a self-stop, an expiry or an eviction, a URL stops being served within one `liveness_cadence_s`. Neither depends on the tenant being online. A withdrawal is the one thing in this section with no timing at all: it has taken effect by the time the gateway answers it.
+**What a tenant sees.** Three timings follow from this section, and a tenant should be told them rather than left to measure them. Between a primary's self-stop and a Takeover's start — about `3 × liveness_cadence_s`, §7.2's outage window — the workload runs nowhere: every member answers about the lease and none of them is running it, so a gateway resolving in that gap answers `no_running_member` (§12.3), not `member_unreachable`. After a Takeover, a URL moves roughly one settle window after the claim was published — `2 × liveness_cadence_s` from its `created_at`, plus whatever a gateway's own polling granularity adds — and it keeps answering from the old member throughout, until the member running it can be found. After a self-stop, an expiry or an eviction, a URL stops being served within one `liveness_cadence_s`. None of the three depends on the tenant being online. A withdrawal is the one thing in this section with no timing at all: it has taken effect by the time the gateway answers it.
 
 ### 12.8 A workload on a Hidden Provider
 
