@@ -318,6 +318,18 @@ const TENANT_TOKEN = continuationFor(
   constants.provider.public_key,
   INFO_PREFIX,
 );
+const OTHER_TOKEN = continuationFor(
+  constants.other_tenant.root_secret,
+  constants.provider.public_key,
+  INFO_PREFIX,
+);
+/** The token a rotation installs (spec §6.8): what the FRESH root secret the
+ *  fixture tenant minted to rotate derives at the fixture provider. */
+const ROTATED_TOKEN = continuationFor(
+  constants.rotated_tenant.root_secret,
+  constants.provider.public_key,
+  INFO_PREFIX,
+);
 
 {
   const vector = load('continuation.vector.json');
@@ -341,6 +353,14 @@ const TENANT_TOKEN = continuationFor(
   report(
     constants.tenant.continuation_at_provider === TENANT_TOKEN,
     'constants: the tenant\'s published token is what its root secret derives at the fixture provider',
+  );
+  report(
+    constants.rotated_tenant.continuation_at_provider === ROTATED_TOKEN,
+    'constants: the rotated token is what the fresh root secret derives at the fixture provider',
+  );
+  report(
+    new Set([TENANT_TOKEN, OTHER_TOKEN, ROTATED_TOKEN]).size === 3,
+    'constants: the three root secrets derive three different tokens here',
   );
 }
 
@@ -381,7 +401,10 @@ function checkLeaseRequest(where, request) {
   );
   report(!('sig' in request) && !('pubkey' in request) && !('kind' in request), `${where}: nothing here is signed`);
   report(/^[0-9a-f]{64}$/.test(request.request_id), `${where}: request_id is 32 bytes of lowercase hex`);
-  report(['spawn', 'standby', 'status', 'terminate'].includes(request.op), `${where}: op is one of §6.1's four`);
+  report(
+    ['spawn', 'standby', 'status', 'terminate', 'rotate'].includes(request.op),
+    `${where}: op is one of §6.1's five`,
+  );
   report(request.provider === constants.provider.public_key, `${where}: provider names the fixture provider`);
   report(/^[0-9a-f]{64}$/.test(request.continuation), `${where}: continuation is 32 bytes of lowercase hex`);
   report(
@@ -403,6 +426,10 @@ for (const file of files) {
 
   if (surface === 'lease_request') {
     checkLeaseRequest(`${file} request`, doc.request);
+    if (kase === 'rotate') {
+      // The token a rotation names is the one `rotate.ok` installs.
+      report(doc.content.next === ROTATED_TOKEN, `${file}: next is the token the fresh root secret derives here`);
+    }
     report(doc.request.op === kase, `${file}: op is ${kase}`);
     report(canonical(doc.content) === canonical(doc.request.content), `${file}: content is the request's own content object`);
     report(doc.request.continuation === TENANT_TOKEN, `${file}: presents the fixture tenant's token for this provider`);
@@ -531,49 +558,127 @@ for (const file of files) {
   if (doc.request_body && typeof doc.request_body === 'object' && doc.request_body.request) {
     checkLeaseRequest(`${file} request_body.request`, doc.request_body.request);
     report(Object.keys(doc.request_body).length === 1, `${file}: the body has no key besides request`);
-    // Every request here is one of the two fixture tenants'; `not_tenant` is
-    // the one that is the OTHER tenant's, which is the whole of what makes
-    // it a refusal.
-    const other = continuationFor(constants.other_tenant.root_secret, constants.provider.public_key, INFO_PREFIX);
+    // Every request here presents a token the fixtures can name, and which
+    // one says what the request is. `not_tenant` is the OTHER tenant's token
+    // — the whole of what makes it a refusal — except after a rotation
+    // (§6.8), where it is the fixture tenant's own token, replaced; and a
+    // status after a rotation (`rotated`) presents the token that replaced
+    // it. Everything else presents the token the lease was taken with.
     const request = doc.request_body.request;
     const token = request.continuation;
     const asserted = request.content?.gateway_expires_at;
+    const code = kase.split('.')[0];
+    const rotated = kase === 'rotated' || kase.endsWith('.rotated');
     if (asserted === undefined) {
-      report(
-        kase === 'not_tenant' ? token === other : token === TENANT_TOKEN,
-        kase === 'not_tenant'
-          ? `${file}: presents the OTHER tenant's token, which this lease was not taken with`
-          : `${file}: presents the fixture tenant's token for this provider`,
-      );
+      const [expected, what] =
+        kase === 'not_tenant.rotated'
+          ? [TENANT_TOKEN, 'the token the lease was taken with, which a rotation replaced']
+          : code === 'not_tenant'
+            ? [OTHER_TOKEN, 'the OTHER tenant\'s token, which this lease was not taken with']
+            : rotated
+              ? [ROTATED_TOKEN, 'the token the rotation installed']
+              : [TENANT_TOKEN, 'the fixture tenant\'s token for this provider'];
+      report(token === expected, `${file}: presents ${what}`);
     } else {
       // A WORKLOAD GATEWAY's request (spec §6.5.1): the value in `continuation`
       // is a Gateway Grant, and `gateway_expires_at` says which moment to
       // recompute it at. The field is named by `status` content and by
-      // nothing else, which is why a gateway cannot reach `terminate` with
-      // it at all.
-      report(request.op === 'status', `${file}: gateway_expires_at is named by status content alone`);
+      // nothing else, which is why a gateway cannot reach `terminate` or
+      // `rotate` with it at all: anywhere else it is `invalid_request`.
+      report(
+        request.op === 'status' || code === 'invalid_request',
+        `${file}: gateway_expires_at is named by status content alone`,
+      );
       // `now <= gateway_expires_at` admits the moment itself (§6.5.1 step 2):
       // `expires_at` is the last second a grant is good for, not the first
       // it is not.
       report(asserted >= constants.now, `${file}: the moment the request asserts has not passed`);
       const grant = gatewaySubFor(TENANT_TOKEN, asserted, GATEWAY_INFO_PREFIX);
-      report(
-        kase === 'bad_grant' ? token !== grant : token === grant,
-        kase === 'bad_grant'
-          ? `${file}: presents a value that is NOT the grant this lease's token derives for that moment`
-          : `${file}: presents the Gateway Grant this lease's token derives for that moment`,
-      );
       if (kase === 'bad_grant') {
         // Well formed, unexpired, and derived from a token this lease was
         // not taken with: the defect is not the shape, and the refusal is
         // `bad_grant` because the request ASSERTED a delegation — the same
         // value asserting none would hear `not_tenant`.
+        report(token !== grant, `${file}: presents a value that is NOT the grant this lease's token derives for that moment`);
         report(
-          token === gatewaySubFor(other, asserted, GATEWAY_INFO_PREFIX),
+          token === gatewaySubFor(OTHER_TOKEN, asserted, GATEWAY_INFO_PREFIX),
           `${file}: it is the OTHER tenant's own grant, which delegates nothing here`,
+        );
+      } else if (kase === 'bad_grant.rotated') {
+        // The very grant `status.delegated` was admitted with — refused now
+        // because the token it derives from is no longer the lease's, and a
+        // provider recomputes a grant from the token it stores (§6.5.1, §6.8).
+        report(token === grant, `${file}: presents the grant the token the lease was taken with derives`);
+        report(
+          token !== gatewaySubFor(ROTATED_TOKEN, asserted, GATEWAY_INFO_PREFIX),
+          `${file}: which is not the grant the token the lease holds now derives`,
+        );
+      } else {
+        report(token === grant, `${file}: presents the Gateway Grant this lease's token derives for that moment`);
+      }
+    }
+
+    // A rotation (spec §6.8): exactly { workload_id, next }, `next` a token,
+    // and — on the one that is answered `rotated: true` — the token the fresh
+    // root secret derives, which is not the one presented.
+    if (request.op === 'rotate') {
+      const content = request.content;
+      if (code !== 'invalid_request') {
+        report(
+          canonical(Object.keys(content).sort()) === canonical(['next', 'workload_id']),
+          `${file}: rotate content is exactly { workload_id, next }`,
+        );
+        report(/^[0-9a-f]{64}$/.test(content.next), `${file}: next is 32 bytes of lowercase hex`);
+        report(content.next === ROTATED_TOKEN, `${file}: next is the token the fresh root secret derives here`);
+        report(content.next !== token, `${file}: next is not the token the request presents`);
+      }
+      if (kase === 'invalid_request.rotate_malformed_next') {
+        report(!/^[0-9a-f]{64}$/.test(content.next), `${file}: next is NOT 32 bytes of lowercase hex`);
+      }
+      if (kase === 'invalid_request.rotate_same_token') {
+        report(content.next === token, `${file}: next IS the token the request presents, the lease's own`);
+      }
+      if (kase === 'stale_request.rotate_replay') {
+        report(
+          canonical(doc.request_body) === canonical(load('rotate.ok.json').request_body),
+          `${file}: the request body is rotate.ok's, byte for byte`,
         );
       }
     }
+  }
+
+  // A rotation's answer confirms the lease and nothing more: no token, old or
+  // new, is anywhere in it (spec §6.8).
+  if (surface === 'rotate' && kase === 'ok') {
+    const request = doc.request_body.request;
+    report(
+      canonical(doc.response_body) === canonical({ workload_id: request.content.workload_id, rotated: true }),
+      `${file}: the answer is exactly { workload_id, rotated: true }`,
+    );
+    report(
+      canonical(request) === canonical({ ...load('lease_request.rotate.json').request, request_id: request.request_id }),
+      `${file}: the body is lease_request.rotate's request`,
+    );
+  }
+
+  // Rotation replaces the token and changes nothing else: the new token reads
+  // exactly what the old one read before the rotation (§6.8).
+  if (surface === 'status' && kase === 'rotated') {
+    report(
+      canonical(doc.response_body) === canonical(load('status.running.json').response_body),
+      `${file}: answered exactly what status.running answered before the rotation`,
+    );
+  }
+
+  // No token — nor a grant of one — reaches an answer, a refusal's message
+  // included (spec §6.1.1). Every token the fixtures know is looked for.
+  if (doc.response_body !== undefined) {
+    const answer = JSON.stringify(doc.response_body);
+    const grantsAt = (t) => (doc.request_body?.request?.content?.gateway_expires_at === undefined
+      ? []
+      : [gatewaySubFor(t, doc.request_body.request.content.gateway_expires_at, GATEWAY_INFO_PREFIX)]);
+    const secrets = [TENANT_TOKEN, OTHER_TOKEN, ROTATED_TOKEN].flatMap((t) => [t, t.toUpperCase(), ...grantsAt(t)]);
+    report(!secrets.some((t) => answer.includes(t)), `${file}: no token or grant appears anywhere in the answer`);
   }
 
   // A grant delegates READING a lease, so the answer is the answer either
@@ -632,7 +737,10 @@ for (const file of files) {
       `${file}: response body is exactly { error, message }`,
     );
     report(ERROR_CODES.includes(body.error), `${file}: error ${JSON.stringify(body.error)} is a spec §5 code`);
-    report(body.error === kase, `${file}: response error code is ${kase}`);
+    // The case is the code, then — where one code has several fixtures, as
+    // rotation's refusals do (§6.8) — a dot and which of them this is.
+    const code = kase.split('.')[0];
+    report(body.error === code, `${file}: response error code is ${code}`);
     report(typeof body.message === 'string' && body.message.length > 0, `${file}: response carries a message`);
     report(Number.isInteger(doc.response_status) && doc.response_status >= 400 && doc.response_status <= 499, `${file}: response_status is a 4xx (this provider's; a tenant reads error, not the status)`);
   }
@@ -740,7 +848,7 @@ for (const file of files) {
       `${file}: a tag points at the Profile coordinate`,
     );
   }
-  for (const free of ['availability', 'status', 'terminate']) {
+  for (const free of ['availability', 'status', 'terminate', 'rotate']) {
     report(routes.has(`${addr}.${free}`), `routes.listing: has the free route ${addr}.${free}`);
   }
 }
