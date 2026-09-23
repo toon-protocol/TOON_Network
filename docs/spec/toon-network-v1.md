@@ -244,20 +244,22 @@ A spawn carries no capability field, and a provider MUST NOT accept one (§6.2).
 
 The provider's connector terminates these routes and forwards them to the provider app. `<addr>` is the profile's `ilp_address`, and `v<n>` is a listing version.
 
-| Route | Price | Purpose |
-|---|---|---|
-| `<addr>.<listing>.v<n>.spawn` | `price` | Spawn a primary or standalone lease |
-| `<addr>.<listing>.v<n>.extend` | `price` | Extend a running lease by one interval |
-| `<addr>.<listing>.v<n>.standby` | `standby_price` | Spawn a Warm Standby lease |
-| `<addr>.<listing>.v<n>.standby.extend` | `standby_price` | Extend a Warm Standby by one interval |
-| `<addr>.availability` | free | Would a spawn run? |
-| `<addr>.status` | free | Lease state and access details |
-| `<addr>.terminate` | free | Termination |
-| `<addr>.rotate` | free | Rotation of the lease's Continuation Token (§6.8) |
+| Route | Price | Request body | Purpose |
+|---|---|---|---|
+| `<addr>.<listing>.v<n>.spawn` | `price` | `{ "request": <Lease Request, op=spawn> }` (§6.2) | Spawn a primary or standalone lease |
+| `<addr>.<listing>.v<n>.extend` | `price` | `{ "workload_id": "…" }` (§6.3) | Extend a running lease by one interval |
+| `<addr>.<listing>.v<n>.standby` | `standby_price` | `{ "request": <Lease Request, op=standby> }` (§6.2) | Spawn a Warm Standby lease |
+| `<addr>.<listing>.v<n>.standby.extend` | `standby_price` | `{ "workload_id": "…" }` (§6.3) | Extend a Warm Standby by one interval |
+| `<addr>.availability` | free | `{ "listing", "version", "image", "role"? }` (§6.4) | Would a spawn run? |
+| `<addr>.status` | free | `{ "request": <Lease Request, op=status> }` (§6.5) | Lease state and access details |
+| `<addr>.terminate` | free | `{ "request": <Lease Request, op=terminate> }` (§6.6) | Termination |
+| `<addr>.rotate` | free | `{ "request": <Lease Request, op=rotate> }` (§6.8) | Rotation of the lease's Continuation Token |
 
 - **Standby routes:** `<addr>.<listing>.v<n>.standby` and `<addr>.<listing>.v<n>.standby.extend` exist for exactly the listings whose Listing event carries `standby_price` (§4.2). A listing that prices no Warm Standby has neither route, and a connector MUST NOT terminate a route the provider did not price.
 - **Rate limits:** the provider SHOULD rate-limit free routes.
 - **Restarts:** adding or retiring a listing version is a connector config change and restart (ADR 0009).
+- **Two body shapes, and the shape is the authorisation (ADR 0025).** Five routes carry the §6.1 Lease Request envelope, `{ "request": … }`, because they act on one lease *on the tenant's authority* and the envelope is what carries the Continuation Token that authority is. Three do not: `availability` names no lease at all, and the two extension routes are **authorised by paying them** — any payer may extend any lease, because an extension only adds time and reveals nothing (ADR 0005). An extension therefore carries no Lease Request and no token, and its body is bare: `{ "workload_id": "…" }`, that key and no other. The envelope is not the default shape a route opts out of; it is what a route that reads a secret needs and what a route that reads none MUST NOT ask for.
+- **A body of the wrong shape is refused `invalid_request`, and on a paid route it costs a full Lease Interval.** An extension carrying `{ "request": … }`, and a spawn, `status`, `terminate` or `rotate` carrying a bare content object, are each an unknown field in the other's shape (§6.1, ADR 0004). The connector collected the route's price before the provider app ever saw the body (ADR 0003, ADR 0005), so the refusal is billed like any other answer and **nothing is refunded** (§2). A tenant's tooling MUST therefore check a paid route's body against this table **before the packet leaves**: the shape is the one mistake that is free to catch and expensive to make.
 
 Every response is JSON. Errors use this shape — exactly these two keys — and on a paid route they are still billed (§2):
 
@@ -340,7 +342,7 @@ A wrong token and an absent one are both `not_tenant`: a request that presents n
 
 **A spawn skips step 4.** There is no stored token yet, so the presented one is stored against the new lease and becomes what every later request presents. A spawn carrying no `continuation` is `invalid_request` rather than `not_tenant`: it would buy a lease nobody could ever read, extend or stop, which is a request the tenant must correct.
 
-**Packet body.** The request body of an authenticated route is the JSON object `{ "request": … }`: the request object above, unmodified, as the value of the single key `request`. It is not re-encoded, base64'd or wrapped further, and a body with any other key MUST be refused as `invalid_request`. This body is the HTTP body inside the connector's sealed envelope: the tenant seals the whole HTTP request to the provider's pinned `connector_seal_key` (§3, ADR 0011; connector ADR 0018), the connector unseals it and forwards plain HTTP, and the provider app reads the body as plaintext JSON and no payment header (§2).
+**Packet body.** The request body of an authenticated route is the JSON object `{ "request": … }`: the request object above, unmodified, as the value of the single key `request`. It is not re-encoded, base64'd or wrapped further, and a body with any other key MUST be refused as `invalid_request`. **The two extension routes are not authenticated routes and carry no Lease Request at all** — their body is bare `{ "workload_id": "…" }`, and one wrapped in `request` is refused the same way, at the route's full price (§5, §6.3, ADR 0025). This body is the HTTP body inside the connector's sealed envelope: the tenant seals the whole HTTP request to the provider's pinned `connector_seal_key` (§3, ADR 0011; connector ADR 0018), the connector unseals it and forwards plain HTTP, and the provider app reads the body as plaintext JSON and no payment header (§2).
 
 **Fixtures.** A Lease Request per `op`, with its packet body, and the derivation vector, are in Appendix B.
 
@@ -405,7 +407,9 @@ The response is:
 
 ### 6.3 Extension
 
-**Request body:** `{ "workload_id": "…" }`, with no signature. Any payer may extend any lease (ADR 0005).
+**Request body:** `{ "workload_id": "…" }` — that key and no other, on both extension routes. There is no Lease Request here, no `request_id`, no `expiration` and no `continuation`: an extension is authorised by paying the route, and any payer may extend any lease, because it only adds time and reveals nothing (ADR 0005, ADR 0025). §6.1.2's four steps are the *authenticated* routes'; an extension is not one of them and runs none of them.
+
+**This is the one asymmetry in §5's bodies, and it is deliberate.** A body wrapped like a spawn's — `{ "request": { … } }` — is an unknown field in this shape and is refused `invalid_request` (§6.1, ADR 0004), **after the route's full price has already been collected** (§5, ADR 0003). A tenant that sends it buys nothing and pays one Lease Interval for the answer, which is why tooling MUST check this body before the packet leaves.
 
 A lease is always billed at the price for what it is doing, so each route wants the lease in the opposite state from the other:
 
