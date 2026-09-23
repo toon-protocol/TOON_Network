@@ -53,7 +53,7 @@ A tenant has no key in this table. It signs nothing, anywhere: what it holds is 
 | Lease root secret | tenant | nothing to anybody. 32 random bytes per lease, from which every Continuation Token of that lease derives (§6.1) |
 | Continuation Token | tenant **and** the provider it was derived for | to that provider alone, that whoever presents it is the party that took this lease |
 
-- **Pinned sealing key:** a Provider Profile MUST publish its connector's sealing public key. A tenant seals to that key and refuses if the URL's self-description reports another key (ADR 0011).
+- **Pinned sealing key:** a Provider Profile MUST publish its connector's sealing public key. A tenant seals to that key and refuses if the URL's self-description reports another key (ADR 0011). A **relay** pins the same three facts about itself, in its own relay information document rather than in a signed event (§13, ADR 0024), so that a party holding nothing but a relay's URL can pay for a write to it.
 - **Payer vs tenant:** the provider never links a payer to a tenant. It never learns who the tenant *is* at all: a Lease Request carries a Continuation Token, and a token names nobody (ADR 0005, ADR 0016).
 - **A tenant Nostr key is out of the request path.** The reserved tenant-side Deployment (§3.1.2) is signed by whatever key its tooling uses; nothing in this protocol reads one, and no provider ever sees it.
 
@@ -119,7 +119,7 @@ Tenant tooling fixes the exact shape; until it does, a provider MUST ignore kind
 
 ## 4. Provider Directory
 
-A provider publishes the events in this section to **every relay in its Relay Set**. Each event MUST carry the tag `["L","toon.network"]` so directory queries can select them.
+A provider publishes the events in this section to **every relay in its Relay Set**. Each event MUST carry the tag `["L","toon.network"]` so directory queries can select them. Every one of those writes is a paid packet, and where it is paid for is the relay's own to say (§13).
 
 ### 4.1 Provider Profile: kind `10432` (replaceable)
 
@@ -974,6 +974,70 @@ An `.anyone` name MUST NOT be resolved or dialled directly, under any circumstan
 
 ---
 
+## 13. A relay's paid write edge
+
+A provider publishes its Profile, its Listings and its Liveness to every relay in its Relay Set (§4), and on this network a relay write is a paid packet. So a provider that cannot find out where a relay's writes are paid for cannot publish at all, and this section says how it finds out: **a relay names its own edge, in its own words, at its own URL.** It is the same statement a Provider Profile makes about a provider, made by a relay about itself, and ADR 0024 records why it is the same three fields.
+
+### 13.1 The relay information document
+
+A TOON relay MUST serve a **NIP-11 relay information document** at the HTTP form of its own relay URL, answered to a `GET` whose `Accept` header names `application/nostr+json`, with that media type on the response. A relay MUST answer the request from any origin, because a client reading it in a browser has no other way to. What a relay answers a request that does **not** ask for the document by that media type is not specified here, and a relay MAY go on answering such a request exactly as it did before it served one.
+
+The document's TOON fields are one object under the key `toon`. Content is JSON:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ilp_address` | string | The ILP address a write to this relay is addressed to, e.g. `g.toon.relay` |
+| `connector_url` | string | The terminating connector's self-description URL, e.g. `https://c.relay.example/ilp`. A location hint only. |
+| `connector_seal_key` | hex | That connector's sealing public key (§3) |
+| `carriage` | string? | The carriage that route pins: `http` or `btp`. Absent — never `both`, never `null` — when the route pins none |
+| `price` | int | µUSDC per write (§2). `0` is a value and means this relay charges nothing |
+| `settlement` | object[] | `{ "chain": "solana" \| "evm:<chainId>", "token": "<address or mint>", "decimals": 6 }` |
+
+`ilp_address`, `connector_url`, `connector_seal_key`, `price` and `settlement` are normative and a relay that serves the document MUST carry all five. `carriage` is normative when present and its absence is a statement of its own — see §13.3. A field this section does not name MUST be ignored, never read as one that is.
+
+The first three are spelled exactly as a Provider Profile spells them (§4.1) because they are the same three facts and one parser reads both: together they say "seal this to that key, address it `<ilp_address>`, and post it there". A client MUST NOT derive any other URL from `connector_url`, by the same reckoning as §12.4.
+
+Everything NIP-11 already has words for stays in NIP-11's own words, and MUST agree with the `toon` object:
+
+- `limitation.payment_required` is true exactly when `price` is greater than `0`.
+- `fees.publication` carries `[{ "amount": <price>, "unit": "uusdc" }]` when `price` is greater than `0`, and is absent otherwise.
+- `limitation.restricted_writes` is true on every TOON relay, whatever it charges: no write is accepted on the websocket, and a free relay is still a restricted one (§13.4).
+
+A client that has never heard of this network therefore still learns from the document that the relay is paid and what a write costs.
+
+### 13.2 The document is derived, not written
+
+A relay MUST derive the `toon` object from the self-description its terminating connector serves for itself, and MUST NOT hold its own copy of any field in it. A relay speaks no ILP and enforces no price; a second copy of the enforcer's facts is a copy that drifts, and what it drifts into is a relay advertising a price nobody charges or a key nobody holds.
+
+Two rules follow, and both are about refusing rather than guessing:
+
+- A relay MUST NOT name an `ilp_address` its connector does not say it terminates. A relay that cannot confirm its address MUST serve the document with **no `toon` object at all** rather than one it could not check.
+- `connector_url` is the endpoint the connector **advertises for itself**, never the address the relay happens to reach it at. Those differ on every deployment where the connector sits behind a proxy or on a private network, and it is the advertised one a client can dial.
+
+The one thing a relay cannot read is which of its connector's routes arrives at its own write surface: a connector publishes its routes' prefixes and prices and never their handler. That single fact is the relay's own configuration, and it is the only part of the edge that is.
+
+A client MAY check the document against the connector's own self-description at `connector_url`, and a client that does so MUST refuse to proceed if the two report different sealing keys, exactly as a tenant does with a Provider Profile (§3, ADR 0011). What the two pins are worth is not the same, and ADR 0024 says so plainly: a Profile is signed by the provider's Nostr key, and a relay's document is signed by nothing.
+
+### 13.3 Carriage
+
+`carriage` is the carriage the relay's write route pins — which transport a packet buying a write must ride. A relay MUST take it from what its connector says it enforces, and MUST omit it when its connector says nothing. An absent `carriage` means **the route pins no carriage that the relay could learn of**, and a client reading a document without one SHOULD dial whichever endpoint the connector's self-description offers and treat a refusal naming a required transport as the answer it would have read here.
+
+A relay MUST NOT publish `both`, or any other value meaning "either is fine", as a carriage. A carriage that is not a pin is silence, and a client MUST read it as such.
+
+### 13.4 A relay that charges nothing
+
+A relay whose write route is priced `0` serves the document unchanged: `price` is `0`, `limitation.payment_required` is false, and `fees` is absent. It still names `ilp_address`, `connector_url` and `connector_seal_key`, because a free write is still a packet to an address and a client still needs all three to send one.
+
+A relay that publishes no edge at all — one with no payment gate in front of it, or one that could not check its address (§13.2) — serves the document with no `toon` object, `limitation.payment_required` false and `limitation.restricted_writes` true. That is a relay saying it takes no write on the websocket and cannot say where one is taken instead, which is a true and useful thing to say.
+
+### 13.5 The refusal names the edge
+
+A relay refuses a write that arrives on its websocket with a NIP-01 `OK` message whose machine-readable prefix is `restricted:`. That message MUST name `ilp_address` and `connector_url`, and SHOULD name the price and the carriage, so that a client can find the edge **from the refusal alone** without first reading the document. It MUST NOT carry `connector_seal_key`: a key is too long to belong in a message a client may be logging a line at a time, and the document is one request away.
+
+A relay MUST render the refusal and the document from one value. Two renderings of one fact are how a relay comes to refuse a write towards one address while advertising another.
+
+---
+
 ## Appendix A. Sandbox profile (development)
 
 v1 is developed against `infra/sandbox`, then pointed at production URLs.
@@ -983,6 +1047,7 @@ v1 is developed against `infra/sandbox`, then pointed at production URLs.
 | Hub connector client edge | `http://localhost:3200` |
 | Relay (reads) | `ws://localhost:7100` |
 | Relay write routes | `g.toon.relay` (1 µUSDC); `g.toon.relay.ephemeral` is not used |
+| Relay information document | `curl -H 'Accept: application/nostr+json' http://localhost:7100/` (§13): the sandbox relay reads its edge from the connector terminating `g.toon.relay` and names it there |
 | TOON store | `g.toon.store`, `kind:5094`; free tier ≤ 107,520 bytes per data item, so `part_size` ≤ 102,400 |
 | Gateway pattern | `http://localhost:3000/raw/{txid}` |
 | Settlement | Solana mock USDC (the hub's client leg) and anvil mock USDC; a provider connector copies `conf/connector-store.toml` |

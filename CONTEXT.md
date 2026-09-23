@@ -130,6 +130,14 @@ _Avoid_: Heartbeat, ping, presence
 The relays a provider publishes its profile, listings and liveness to.
 _Avoid_: The relay
 
+**Write Edge**:
+Where a write to a relay is paid for: the ILP address it is addressed to, the connector it is posted to, and the key it is sealed to. The same three facts a Provider Profile publishes about a provider, published by a relay about itself.
+_Avoid_: Write route, payment endpoint, paywall
+
+**Relay Information Document**:
+What a relay says about itself at its own URL, including its Write Edge. A NIP-11 document, and not a published event: it is served, not signed.
+_Avoid_: Relay metadata, relay manifest, relay announce
+
 ### Registries
 
 **Image Registry**:
