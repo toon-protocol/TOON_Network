@@ -49,7 +49,7 @@ The paid request that starts a lease and buys its first lease interval.
 _Avoid_: Deploy, create, launch
 
 **Extension**:
-A paid request that adds one lease interval to an existing lease.
+A paid request that adds one lease interval to an existing lease. It names the workload and nothing else, presents no continuation token, and is authorised by paying its route, so any payer may extend any lease (ADR 0005, ADR 0025).
 _Avoid_: Top-up, renewal
 
 **Capability**:
