@@ -16,3 +16,8 @@ The most Nostr-native place for a key is a **signer**: a NIP-46 remote signer (A
 - The Nostr key and the payer keys stay unlinked on chain. This keeps spec §3's separation of Payer and Tenant.
 - Anyone who holds the account's Nostr key holds its funds. The console says so when an account first seals a seed.
 - A relay learns that the account has one sealed seed record, but not what it contains.
+
+## Two rulings this left open, decided 2026-09-22
+
+- **A Chain Seed is never revealed.** There is no export, no reveal-once-at-mint, and no route that could grow one. Recovery is the Nostr key and nothing else, which is what makes "the npub unlocks the funds" a complete sentence rather than one of two paths. The cost is stated plainly: an Account that loses its Nostr key loses the funds at its payer addresses, and the console says so once, before it ever shows an address to deposit to.
+- **More than one seed is surfaced, not merged.** Two machines that both mint while offline leave two sealed records, and NIP-01's replacement rule picks one. The console warns loudly, shows both addresses, and neither merges them nor keeps deriving from the loser. Recovering funds from a superseded seed would mean carrying every seed an Account ever had, forever, to rescue a case a warning prevents.
