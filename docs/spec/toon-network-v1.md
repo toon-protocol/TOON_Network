@@ -121,6 +121,8 @@ Tenant tooling fixes the exact shape; until it does, a provider MUST ignore kind
 
 A provider publishes the events in this section to **every relay in its Relay Set**. Each event MUST carry the tag `["L","toon.network"]` so directory queries can select them. Every one of those writes is a paid packet, and where it is paid for is the relay's own to say (§13).
 
+**Which carriage a directory write rides is the relay connector's to state and the publisher's to read.** These events are paid packets to the relay's own prefix (§4.3, ADR 0007), and a relay's connector MAY require that packets to that prefix arrive over one client carriage rather than either. Where it does, it MUST publish the requirement on that route's own entry in the self-description a publisher already fetches, and a publisher MUST read it there and dial what it names **before** it sends. Neither side may treat the refusal as the discovery mechanism: a publisher that learns the carriage by being refused has already failed to write the event, and a relay that enforces a requirement it does not publish leaves a provider running, serving and absent from the directory with nothing to read that would say why. The refusal remains, as the backstop for a publisher that did not read. A route that accepts either carriage states nothing, and a publisher dials whichever the node offers, exactly as before. ADR 0024; the mechanism is connector ADR 0072.
+
 ### 4.1 Provider Profile: kind `10432` (replaceable)
 
 One per provider. Content is JSON:
