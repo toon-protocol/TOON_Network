@@ -939,6 +939,27 @@ for (const file of files) {
     collect(constants);
     report(secrets.length > 0 && secrets.every((s) => !rendered.includes(s)), `${file}: no secret from constants.json appears`);
     report(!rendered.includes('"continuation"'), `${file}: no continuation field anywhere`);
+
+    // `directory.relays[url].{profile,liveness,listings[name]}.kind`
+    // (TOON_Network#178): additive to `refusal` rather than a change to it —
+    // the document stays version 1 — so `kind` is `null` exactly when
+    // `refusal` is, and otherwise says WHICH kind of miss `refusal`
+    // describes: a relay's own "no" (`refused`), or a write that never
+    // reached a relay to be refused at all (`not_sent`).
+    for (const [relay, entries] of Object.entries(body.directory.relays)) {
+      const outcomes = [
+        ['profile', entries.profile],
+        ['liveness', entries.liveness],
+        ...Object.entries(entries.listings).map(([name, o]) => [`listing ${name}`, o]),
+      ];
+      for (const [what, outcome] of outcomes) {
+        if (!outcome) continue;
+        const ok =
+          (outcome.refusal === null && outcome.kind === null) ||
+          (typeof outcome.refusal === 'string' && ['refused', 'not_sent'].includes(outcome.kind));
+        report(ok, `${file}: ${relay} ${what}.kind is null iff refusal is, else "refused" | "not_sent"`);
+      }
+    }
   }
 
   // A lease's state on the wire (§6.7): a string, or a one-key { ended } object.
