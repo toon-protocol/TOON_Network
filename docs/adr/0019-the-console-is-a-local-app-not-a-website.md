@@ -1,6 +1,6 @@
 # The console is a local app, not a website
 
-**Status:** Proposed, 2026-09-22. Decided in the console design session; the glossary terms are **Console**, **Account** and **Signer**.
+**Status:** Proposed, 2026-09-22. Decided in the console design session; the glossary terms are **Console**, **Account** and **Signer**. Amended by ADR 0028: the primary window is now a terminal UI that drives the same daemon, and the web UI remains.
 
 The TOON Network console is a **local daemon with a web UI**, not a hosted website. A `systemd --user` Node daemon runs `@toon-protocol/client`, holds the account's keys, and serves the UI on `127.0.0.1`. The UI opens as an Omarchy web app (`omarchy-webapp-install`, `omarchy-launch-or-focus-webapp`). The app is Omarchy-first: it takes its colours from the current Omarchy theme and re-themes on the `theme-set` hook, adds entries to the Omarchy menu, sends lease alerts with `omarchy-notification-send`, and ships as an AUR package. Only the landing page and the docs are public.
 
