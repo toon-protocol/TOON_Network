@@ -76,7 +76,7 @@ Every repository below is public under [toon-protocol](https://github.com/toon-p
 
 ## I want to…
 
-| …to | Go to |
+| I want to… | Go to |
 |---|---|
 | Use the network: find a provider, fund a channel, spawn a workload | [console](https://github.com/toon-protocol/console) |
 | Run a provider | [Run a provider](https://github.com/toon-protocol/provider#run-a-provider) |
