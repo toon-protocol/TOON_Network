@@ -908,6 +908,39 @@ for (const file of files) {
     }
   }
 
+  // The operator's status document (ADR 0029, TOON_Network#170): sectioned
+  // under a version, billed as price × paid intervals, and carrying no secret.
+  if (surface === 'operator_status') {
+    const body = doc.response_body;
+    report(doc.response_status === 200, `${file}: answered 200, whatever it reports`);
+    report(doc.http_method === 'GET' && doc.http_path === '/operator/status', `${file}: GET /operator/status`);
+    report(body.version === 1, `${file}: version is 1`);
+    for (const section of ['identity', 'directory', 'leases']) {
+      report(typeof body[section] === 'object' && body[section] !== null, `${file}: has the ${section} section`);
+    }
+    report(body.identity.pubkey === constants.provider.public_key, `${file}: identity.pubkey is the fixture provider`);
+    const listings = body.leases.listings;
+    for (const [name, use] of Object.entries(listings)) {
+      report(use.available === use.capacity - use.live, `${file}: ${name} available = capacity - live`);
+    }
+    for (const lease of body.leases.leases) {
+      const use = listings[lease.listing];
+      const billed =
+        use.price * lease.paid_intervals.running + (use.standby_price ?? 0) * lease.paid_intervals.standby;
+      report(lease.billed === billed, `${file}: lease ${lease.id} billed = price × paid intervals (${billed})`);
+    }
+    const rendered = JSON.stringify(body);
+    const secrets = [];
+    const collect = (value, key) => {
+      if (typeof value === 'string' && /secret/.test(key ?? '')) secrets.push(value);
+      if (typeof value === 'string' && key === 'continuation_at_provider') secrets.push(value);
+      if (value && typeof value === 'object') for (const [k, v] of Object.entries(value)) collect(v, k);
+    };
+    collect(constants);
+    report(secrets.length > 0 && secrets.every((s) => !rendered.includes(s)), `${file}: no secret from constants.json appears`);
+    report(!rendered.includes('"continuation"'), `${file}: no continuation field anywhere`);
+  }
+
   // A lease's state on the wire (§6.7): a string, or a one-key { ended } object.
   if (doc.response_body && doc.response_status === 200 && 'state' in doc.response_body) {
     const state = doc.response_body.state;
