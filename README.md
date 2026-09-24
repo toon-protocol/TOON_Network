@@ -81,7 +81,7 @@ Every repository below is public under [toon-protocol](https://github.com/toon-p
 | Use the network: find a provider, fund a channel, spawn a workload | [console](https://github.com/toon-protocol/console) |
 | Run a provider | [Run a provider](https://github.com/toon-protocol/provider#run-a-provider) |
 | Run a Workload Gateway | [Run a gateway](https://github.com/toon-protocol/gateway#run-a-gateway). A provider does not need one |
-| See what my node earned, and redeem it | The connector's [dashboard](https://github.com/toon-protocol/connector#the-dashboard) at `/dashboard` on its edge, and its [operator surface](https://github.com/toon-protocol/connector#the-operator-surface) (`POST /channels/:id/redeem-latest`) |
+| See what my node earned, and redeem it | The connector's [dashboard](https://github.com/toon-protocol/connector#the-dashboard) at `/dashboard` on its edge **shows** claims and channels; redeeming is a signed write to its [operator surface](https://github.com/toon-protocol/connector#the-operator-surface) (`POST /channels/:id/redeem-latest`), which the dashboard does not make. A guided `toon-provider redeem` is planned ([ADR 0029](docs/adr/0029-a-providers-operator-surface-is-a-status-command-on-the-box.md)) |
 | Run the whole network on my machine | [infra `sandbox/`](https://github.com/toon-protocol/infra/blob/main/sandbox/README.md): `make setup && make up && make smoke` |
 | See what is live on the devnet | [infra `docs/devnet.md`](https://github.com/toon-protocol/infra/blob/main/docs/devnet.md), or `node sandbox/scripts/devnet-status.mjs` in a clone of infra. Every check it makes is free |
 | Pay a TOON route from code | [toon-client](https://github.com/toon-protocol/toon-client) |
