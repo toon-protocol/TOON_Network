@@ -699,12 +699,16 @@ A provider that does not implement this resolution at all answers `refused_image
 
 ## 10. Hidden Provider
 
-A provider MAY set `hidden: true` only if all of these hold (ADR 0008):
+A provider MAY set `hidden: true` only if all of these hold (ADR 0008, ADR 0030):
 - its connector is reachable only at an `.anyone` address;
 - every lease's SSH and ports are reachable only at a per-lease `.anyone` address;
 - all workload egress leaves through `anon`;
 - its profile has no `host`;
-- it runs its own settlement RPC.
+- its settlement RPC is **either** self-hosted on a loopback or private address, **or** a public endpoint reached only through the provider's `anon` proxy, on one pinned circuit per chain, with no direct fallback.
+
+The settlement route, whichever it is, MUST cover every process on the box that dials that RPC — the connector's settlement backends and its EVM syncer and rate source, and the directory publisher, alike (ADR 0030). One of those left dialling direct undoes the rest. A proxy that is unreachable MUST fail the settlement dial closed, never fall back to a direct one, the same way a Hidden Provider's ingress and egress already fail closed rather than going clearnet.
+
+A proxied settlement RPC does not hide payments: every deposit, claim and settlement still names the provider's on-chain addresses on a public chain, exactly as a self-hosted RPC leaves them (ADR 0008). What changes is who learns the operator's network address alongside those addresses: behind the proxy, the RPC provider sees the same queries and transactions but an exit relay's address rather than the operator's, so it can profile the provider's settlement activity and cannot locate it. A self-hosted node is not automatically the stronger choice: it hides RPC reads completely, but its own chain p2p traffic — gossip that publishes a node's contact information, and the first p2p hop of every transaction it submits — is itself an identifying signal unless that traffic is also proxied, which this spec neither requires nor covers (ADR 0030).
 
 A Hidden Provider's Listings each carry `["l", "hidden:true", "toon.network"]` (§4.2), so a tenant can filter for or against hidden compute by tag alone; a tenant that wants a hidden lease reaches the connector through a `socks5h://` proxy, and its access details name a per-lease `.anyone` host in place of an IP (§6.2).
 
@@ -724,7 +728,8 @@ A Hidden Provider's workload MAY be given a public name by a Workload Gateway (�
 4. **Runtime route writes. Closed, 2026-09-22 (Milestone 7, #71), out of scope.** The connector has none for terminated routes, so every listing change still restarts it (ADR 0009). A runtime write is the connector's mechanism to build, not this protocol's, so TOON Network stops tracking a change it cannot make; the connector repository owns it if it is ever built.
 5. **Template expansion. Closed, 2026-09-22 (Milestone 7, #71).** The tenant expands a Template into a spawn; a provider never reads one, and `template` in a spawn stays informational (§8.3). The earlier walkthrough that described a provider reading a Template does not describe v1.
 6. **Hostnames and TLS. Closed, 2026-09-17 (Milestone 5, #46).** They stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`, which **§12** now specifies in full — what a gateway is, how it is told what to serve, the canonical hostname it derives, its error page, resolution across a Standby Set, what a forwarded request carries, a readable name, how it follows the workload through a Takeover, and a workload on a Hidden Provider. The authority it needed is a **delegation of `status`** (§6.5). ADR 0013 is *Accepted*. Milestone 6 (#56) changes how that delegation is carried — a **Gateway Grant** derived from the lease's Continuation Token and handed to the gateway directly (§6.5.1), rather than an event the tenant signs and publishes — without reopening the decision. What a gateway is told besides the grant, chiefly which of a spawn's `ports` is the HTTP one, travels with it in the **Gateway Handover** that milestone's later tickets specify.
-7. **Later rounds.** Reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
+7. **Hidden Provider settlement RPC. Closed, 2026-09-25 (#167).** ADR 0008's fifth condition — "it runs its own settlement RPC" — is amended by **ADR 0030**: a Hidden Provider's settlement RPC may instead be a public endpoint reached only through its `anon` proxy, on the evidence gathered in connector ADR 0073. §10 states the rule, that it must cover every process on the box that dials that RPC, that it fails closed, and what it does and does not hide. Self-hosting is not required to also proxy its own chain-node traffic; that gap is stated in §10 rather than glossed over, for want of evidence to size its cost.
+8. **Later rounds.** Reputation receipts, auditor labels, streaming state to standbys, Lading as a blob source, more tokens, and KVM workloads.
 
 ---
 
