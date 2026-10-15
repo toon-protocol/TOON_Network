@@ -1,4 +1,4 @@
-# TOON Network protocol v1 (draft)
+# TOON Compute protocol v1 (draft)
 
 **Status:** draft, 2026-09-15. Written from the design session that produced [`CONTEXT.md`](../../CONTEXT.md) and [ADRs 0001–0011](../adr/). Where this spec and an ADR disagree, the ADR wins and this spec has a bug.
 
@@ -59,7 +59,7 @@ A tenant has no key in this table. It signs nothing, anywhere: what it holds is 
 
 ### 3.1 Event kinds
 
-Every TOON Network kind is allocated from one contiguous block per NIP-01 class, so that a relay filter on a block is cheap and future kinds land next to the existing ones (ADR 0012). The blocks are:
+Every TOON Compute kind is allocated from one contiguous block per NIP-01 class, so that a relay filter on a block is cheap and future kinds land next to the existing ones (ADR 0012). The blocks are:
 
 | Class | Block | Allocated | Free for later kinds |
 |---|---|---|---|
@@ -67,7 +67,7 @@ Every TOON Network kind is allocated from one contiguous block per NIP-01 class,
 | Replaceable (`10000`–`19999`) | `10432`–`10441` | `10432`–`10433` | `10434`–`10441` |
 | Addressable (`30000`–`39999`) | `30432`–`30441` | `30432`–`30437` | `30438`–`30441` |
 
-A new TOON Network kind MUST be taken from the free range of the block for its class, lowest number first. When a block runs out, the next block is chosen by the same collision check as §3.1.1 and recorded here.
+A new TOON Compute kind MUST be taken from the free range of the block for its class, lowest number first. When a block runs out, the next block is chosen by the same collision check as §3.1.1 and recorded here.
 
 **Two numbers were allocated and given back.** `4432` was the Lease Request and `30438` the Gateway Grant. A Lease Request is not a Nostr event any more, and a gateway's delegation is derived rather than published (ADR 0016), so both numbers are free again and a later kind takes them in the ordinary way. A freed number inside a reserved block is not a contradiction of ADR 0012: the block is still one block, and the rule is still lowest free number first.
 
@@ -498,7 +498,7 @@ standby:              Reserved ──takeover──▶ Running ──▶ Ended(�
 - **Reservations count:** a `Reserved` lease holds its `workload_id` and its capacity slot exactly as a running one does, so Liveness `available` (§4.3) and `availability` (§6.4) both subtract it.
 - **Expiry:** the provider MUST sweep at least as often as the Expiry sweep floor §7.2 fixes, and end every lease with `expires_at <= now`. There is no grace period (ADR 0003).
 - **Eviction:** a provider MAY evict a lease for abuse, policy or maintenance. It MUST publish an Eviction Notice.
-- **Eviction Notice** (kind `4433`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tags `["x", "<workload_id>"]` and `["L", "toon.network"]` (the label every TOON Network event carries, §4). `reason` is one of `abuse` (the workload abused this provider or something reachable from it), `policy` (it broke a policy the provider states outside this protocol), `maintenance` (the provider needs the capacity back) or `other`; `message` says what happened in words; with `other` it is all a reader has to go on, so it SHOULD not be empty. A reader MUST NOT refuse a notice for a `reason` it does not know: a later version may add one.
+- **Eviction Notice** (kind `4433`, regular): published to the Relay Set, with content `{ "workload_id": "…", "reason": "<code>", "message": "…" }` and tags `["x", "<workload_id>"]` and `["L", "toon.network"]` (the label every TOON Compute event carries, §4). `reason` is one of `abuse` (the workload abused this provider or something reachable from it), `policy` (it broke a policy the provider states outside this protocol), `maintenance` (the provider needs the capacity back) or `other`; `message` says what happened in words; with `other` it is all a reader has to go on, so it SHOULD not be empty. A reader MUST NOT refuse a notice for a `reason` it does not know: a later version may add one.
 - **Persistence:** the provider MUST persist running leases and reservations across its own restarts, each with the Continuation Token it holds now — the one a rotation installed, if there was one (§6.1.1, §6.8). A restart that forgot the token would leave a paid workload running that nobody could read, extend or stop.
 
 ### 6.8 Rotation (free)
@@ -596,7 +596,7 @@ Only `liveness_cadence_s` is a provider's to choose, in its Profile (§4.1). Eve
 
 ## 8. Image Registry and image bytes
 
-The three events in this section are signed by a **publisher**, never by a provider: a provider only reads them. Like every other TOON Network event they carry `["L","toon.network"]` (§4), so one relay filter finds them whatever their kind.
+The three events in this section are signed by a **publisher**, never by a provider: a provider only reads them. Like every other TOON Compute event they carry `["L","toon.network"]` (§4), so one relay filter finds them whatever their kind.
 
 ### 8.1 Image Registry entry: kind `30434` (addressable)
 
@@ -654,7 +654,7 @@ Signed by the publisher, with `d = <template name>`.
 - **Content:** `{ "version": n, "image": { "digest", "registry_entry"? }, "ports": [ { "container_port", "protocol" } ], "data_path"?, "env_fixed": {…}, "env_tenant": ["NAME", …], "min_resources"?: { "cpu_millicores", "memory_mb", "storage_gb", "gpu"? } }`
 - **Shapes it borrows:** `image` is §6.2's registry-entry or digest-alone form (never the upstream one — a Template names an image by content address); `ports` is a spawn's `ports` (§6.2); `min_resources` is a Listing's `resources` (§4.2), read as a floor for choosing a Listing rather than as a rule on any provider.
 - **No capabilities:** a Template grants nothing (ADR 0004).
-- **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Network and belong to rig, outside the `toon.network` label (ADR 0014).
+- **Not actions:** a Template describes a spawn only. Reusable CI actions are out of scope for TOON Compute and belong to rig, outside the `toon.network` label (ADR 0014).
 - **Who expands it:** in v1 the **tenant** expands a Template into a spawn. The provider never reads Templates, and `template` in a spawn is informational (§11, item 5).
 
 ### 8.4 Resolving and fetching an image (provider)
@@ -725,7 +725,7 @@ A Hidden Provider's workload MAY be given a public name by a Workload Gateway (�
 1. **Label vocabulary. Closed, 2026-09-22 (Milestone 7, #72).** §4.4 fixed `isolation`, `arch`, and the `docker` and `nesting` capabilities; it now also fixes `gpu:<vendor>-<model>` and how a capability graduates from `x-`. The GPU grammar is `[a-z0-9]+(-[a-z0-9]+)*`, `<vendor>` is `nvidia`, `amd`, `intel` or `apple` and grows by amendment, and `<model>` is an open set within the grammar, e.g. `nvidia-rtx-4090`, `nvidia-a100-80gb`. A Listing's `resources.gpu` MUST equal its `gpu:` label or it is not purchasable, a tenant MUST ignore a label that breaks the grammar, and `resources.gpu` names one device — multi-GPU is out of scope. A capability becomes specified only by an ADR plus a §4.4 entry, after which a provider publishes the bare name; `x-<name>` and `<name>` stay distinct forever, so a graduation never changes what an old Listing grants.
 2. **Large Blob Records. Closed, 2026-09-22 (Milestone 7, #73).** A Blob Record's content now carries **either** `parts` (unchanged) **or** `pages` — never both, never neither. `pages` is an ordered `{ "txid", "sha256", "parts" }` array; each page is one further TOON store upload of its own, a JSON array of part objects in `parts`' own shape, and `sha256` is the bare hex of the page's own bytes. A reader fetches and digest-checks every page, and its `parts` count, before trusting a single part from it, then concatenates the pages' part lists in page order into the same ordered list `parts` would have been — after which `part_size`, the size sum, every per-part check and the whole-blob digest (§8.4) apply unchanged. No new event kind and no change to an Image Registry entry. A record with both forms, with neither, or with a page that cannot be fetched or fails its digest, fails that source and §8.4's chain moves on; `availability` (§6.4) answers a paged blob exactly as an inline one. The publisher tool switches to `pages` on its own once the inline record would not fit one store data item (about 700 parts, ~70 MB); the switch point is the tool's own choice and is not normative, and small blobs keep inline `parts`.
 3. **Timing constants. Closed, 2026-09-22 (Milestone 7, #71).** They were first guesses; they are normative now. **§7.2** states one table — the request window, the sweep floor, the takeover trigger, the settle window and the primary self-stop, all as multiples of the provider-chosen `liveness_cadence_s` where §7.1 and §6.7 already had them — the invariant that keeps a partitioned primary from running beside the standby that takes over, and the outage window (about 3*c*) a Workload Gateway spends answering `no_running_member` (§12.3, §12.7). The values themselves are unchanged; changing one is its own ADR. ADR 0010 is amended to state the invariant and where "may briefly run two copies" still applies.
-4. **Runtime route writes. Closed, 2026-09-22 (Milestone 7, #71), out of scope.** The connector has none for terminated routes, so every listing change still restarts it (ADR 0009). A runtime write is the connector's mechanism to build, not this protocol's, so TOON Network stops tracking a change it cannot make; the connector repository owns it if it is ever built.
+4. **Runtime route writes. Closed, 2026-09-22 (Milestone 7, #71), out of scope.** The connector has none for terminated routes, so every listing change still restarts it (ADR 0009). A runtime write is the connector's mechanism to build, not this protocol's, so TOON Compute stops tracking a change it cannot make; the connector repository owns it if it is ever built.
 5. **Template expansion. Closed, 2026-09-22 (Milestone 7, #71).** The tenant expands a Template into a spawn; a provider never reads one, and `template` in a spawn stays informational (§8.3). The earlier walkthrough that described a provider reading a Template does not describe v1.
 6. **Hostnames and TLS. Closed, 2026-09-17 (Milestone 5, #46).** They stay out of the provider protocol and belong to a **Workload Gateway** keyed by `workload_id`, which **§12** now specifies in full — what a gateway is, how it is told what to serve, the canonical hostname it derives, its error page, resolution across a Standby Set, what a forwarded request carries, a readable name, how it follows the workload through a Takeover, and a workload on a Hidden Provider. The authority it needed is a **delegation of `status`** (§6.5). ADR 0013 is *Accepted*. Milestone 6 (#56) changes how that delegation is carried — a **Gateway Grant** derived from the lease's Continuation Token and handed to the gateway directly (§6.5.1), rather than an event the tenant signs and publishes — without reopening the decision. What a gateway is told besides the grant, chiefly which of a spawn's `ports` is the HTTP one, travels with it in the **Gateway Handover** that milestone's later tickets specify.
 7. **Hidden Provider settlement RPC. Closed, 2026-09-25 (#167).** ADR 0008's fifth condition — "it runs its own settlement RPC" — is amended by **ADR 0030**: a Hidden Provider's settlement RPC may instead be a public endpoint reached only through its `anon` proxy, on the evidence gathered in connector ADR 0073. §10 states the rule, that it must cover every process on the box that dials that RPC, that it fails closed, and what it does and does not hide. Self-hosting is not required to also proxy its own chain-node traffic; that gap is stated in §10 rather than glossed over, for want of evidence to size its cost.

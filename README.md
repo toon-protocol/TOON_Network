@@ -1,8 +1,10 @@
-# TOON Network
+# TOON Compute
 
 A decentralized compute marketplace built on TOON. **Providers** sell leases on
 workloads, **tenants** buy them over TOON payment channels, the TOON relay
 carries discovery, and the TOON store holds image bytes.
+
+*Formerly "TOON Network". Renamed on 2026-10-15 so that "the TOON network" means only the payment network ([brand architecture](https://github.com/toon-protocol/brand/blob/main/architecture.md)). The repository name, the spec's file name and the `toon.network` event label are identifiers and keep their names. ADRs written before the rename keep the old name.*
 
 This repository is the protocol: the [spec](docs/spec/toon-network-v1.md), the
 [glossary](CONTEXT.md) and the [decisions](docs/adr/). The code lives in the
