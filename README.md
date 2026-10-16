@@ -101,19 +101,23 @@ money. The faucet gives no native gas: devnet SOL and Base Sepolia ETH come from
 elsewhere ([devnet.md](https://github.com/toon-protocol/infra/blob/main/docs/devnet.md#money-and-the-one-thing-no-faucet-gives-you)
 says where).
 
+One connector, `https://toonprotocol.dev` (BTP at `wss://toonprotocol.dev/ilp/btp`),
+terminates the relay, store, gas and Workload Gateway routes. The relay's free
+reads are its own WebSocket.
+
 | Service | ILP address | Endpoint |
 |---|---|---|
 | Faucet (mock USDC) | | `https://faucet.devnet.toonprotocol.dev` |
-| Relay | `g.toon.relay` | `https://proxy.relay.devnet.toonprotocol.dev` (paid writes), `wss://relay-ws.devnet.toonprotocol.dev` (free reads) |
-| Store | `g.toon.store` | `https://proxy.ario.devnet.toonprotocol.dev` |
-| Gas station | `g.toon.gas` | `https://proxy.gas.devnet.toonprotocol.dev` |
+| Relay | `g.toon.relay` | `https://toonprotocol.dev` (paid writes), `wss://relay.toonprotocol.dev` (free reads) |
+| Store | `g.toon.store` | `https://toonprotocol.dev` |
+| Gas station | `g.toon.gas` | `https://toonprotocol.dev` |
 | Provider | `g.toon.provider` | `https://proxy.provider.devnet.toonprotocol.dev` |
-| Workload Gateway | `g.toon.workload-gateway` | `https://proxy.gateway.devnet.toonprotocol.dev`, serving `<label>.gw.devnet.toonprotocol.dev` |
+| Workload Gateway | `g.toon.workload-gateway` | `https://toonprotocol.dev`, serving `<label>.gw.devnet.toonprotocol.dev` |
 
-Ask any of them what it sells, for free:
+Ask it what it sells, for free:
 
 ```bash
-npx @toon-protocol/client describe https://proxy.provider.devnet.toonprotocol.dev
+npx @toon-protocol/client describe https://toonprotocol.dev
 ```
 
 ## Reference
