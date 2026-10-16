@@ -1,6 +1,6 @@
 # The console's primary window is a terminal
 
-**Status:** Proposed, 2026-09-24. Amends ADR 0019, which deferred a TUI rather than rejecting it. The glossary terms are **Console**, **Account** and **Signer**.
+**Status:** Superseded by ADR 0031 (the console is retired), 2026-10-16. Was: Proposed, 2026-09-24. Amends ADR 0019, which deferred a TUI rather than rejecting it. The glossary terms are **Console**, **Account** and **Signer**.
 
 The console's main window becomes a **terminal UI**. It is a Rust binary, `toon-console-tui`, built with `ratatui`, and it drives the same `systemd --user` daemon over the same local `/api/*` routes that the web UI uses. The Omarchy launcher, the menu entries and the default `toon-console` command open it with `omarchy-launch-or-focus-tui`. The web UI stays and is opened with `toon-console --web`. The daemon is unchanged: it still holds the keys, pays for every relay write, and serves the web UI on `127.0.0.1`.
 

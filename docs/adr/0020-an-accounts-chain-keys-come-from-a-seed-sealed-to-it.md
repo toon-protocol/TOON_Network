@@ -1,6 +1,6 @@
 # An account's chain keys come from a seed sealed to it
 
-**Status:** Proposed, 2026-09-22. Decided in the console design session; the glossary terms are **Account**, **Signer** and **Chain Seed**.
+**Status:** Superseded by ADR 0031 (the console is retired), 2026-10-16. Was: Proposed, 2026-09-22. Decided in the console design session; the glossary terms are **Account**, **Signer** and **Chain Seed**.
 
 An account's payer keys on every settlement chain come from **one BIP-39 Chain Seed**. The seed is random and is **NIP-44-sealed to the account's own Nostr key**. It is kept on the account's relays with a local cache, so the keys can be recovered anywhere the account can sign. They are derived with `toon-client`'s existing paths: EVM at `m/44'/60'/0'/0/i` and Solana at `m/44'/501'/i'/0'`. "The same wallet" therefore means that the account's Nostr key unlocks its chain keys, not that the chain keys are computed from it.
 

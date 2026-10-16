@@ -1,6 +1,6 @@
 # Root secrets are vaulted on the account's own relays
 
-**Status:** Proposed, 2026-09-22. Decided in the console design session; the glossary term is **Lease Vault**.
+**Status:** Superseded by ADR 0031 (the console is retired), 2026-10-16. Was: Proposed, 2026-09-22. Decided in the console design session; the glossary term is **Lease Vault**.
 
 The console keeps each lease's root secret in the account's **Lease Vault**: one NIP-78 app-data event per lease (kind 30078, one `d` tag per lease), with the contents NIP-44-sealed to the account itself. The vault is published to the account's NIP-65 write relays and cached locally. An account that signs in on a new machine gets its leases back.
 
