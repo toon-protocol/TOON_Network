@@ -1,10 +1,10 @@
 # A provider's operator surface is a status command on the box
 
-**Status:** Accepted, 2026-09-24. Settled in a design review after the first outside operator asked to run a provider ([#154](https://github.com/toon-protocol/TOON_Network/issues/154)). Nothing in it is built yet; the spec issue that follows breaks it into tickets. The glossary terms are **Provider**, **Provider Directory**, **Liveness**, **Lease** and **Lease Interval**.
+**Status:** Accepted, 2026-09-24. Settled in a design review after the first outside operator asked to run a provider ([#154](https://github.com/toon-protocol/TOON_Network/issues/154)). Nothing in it is built yet; the spec issue that follows breaks it into tickets. **Amended 2026-10-16** ([provider#66](https://github.com/toon-protocol/provider/issues/66)): the x402-only connector lands vouchers on its own, and this ADR now treats that as protection rather than spending. See "Money" below. The glossary terms are **Provider**, **Provider Directory**, **Liveness**, **Lease** and **Lease Interval**.
 
 A provider operator has four jobs: keep the box **funded**, keep it **listed**, see and collect what it **earned**, and see the **leases** it is running. Today each of those is a different tool or none. The connector's operator dashboard (connector ADR 0066) shows claims and channels. The provider app answers one operator route, `POST /operator/evict`, on a loopback-only port. The directory publisher answers `/health` and `/publish`. Keys come from `openssl rand`. An operator whose publisher channel runs dry drops out of the directory, and nothing tells them.
 
-**The provider gains one read-only status surface, on the box, and one command that reads it.** The running provider answers `GET /operator/status` on the loopback operator port it already has. `toon-provider status` prints it, as JSON with `--json` and as an exit code with `--check`. A full-screen `toon-provider dash` is a view over the same document. Money stays where it is, and nothing spends it on its own.
+**The provider gains one read-only status surface, on the box, and one command that reads it.** The running provider answers `GET /operator/status` on the loopback operator port it already has. `toon-provider status` prints it, as JSON with `--json` and as an exit code with `--check`. A full-screen `toon-provider dash` is a view over the same document. Nothing spends the operator's money on its own. The connector does collect what the operator is owed on its own (see "Money").
 
 ## What status says
 
@@ -14,7 +14,7 @@ In this order, because the first question an operator has is "am I listed?":
 2. **Directory.** For each relay in the Relay Set, when the Profile, each Listing and the latest Liveness were last accepted, or the refusal if they were not, and when the current Liveness expires. The provider keeps each publication's per-relay report in memory for this. Today it only logs it.
 3. **Publisher.** The channel, what was deposited, what is spent, what is left, and the runway at the current Liveness cadence. The publisher gains a `GET /status` that joins the client's two channel files to say so.
 4. **Leases.** For each listing, capacity in use out of capacity. For each lease: its id, role, state, expiry, ports and `.anyone` address. Also what it has been **billed**: the listing price times the Lease Intervals it has paid for, a count the lease record starts keeping.
-5. **Earnings.** The connector's inbound claims per channel, what is unredeemed and when it was last redeemed, read with the bearer token from the box.
+5. **Earnings.** The connector's inbound channels: the highest voucher accepted, what has landed on chain and when, read with the bearer token from the box.
 6. **Funding.** The connector's settlement key's SOL balance, the same free read `keys.sh` makes before first boot ([#162](https://github.com/toon-protocol/TOON_Network/issues/162)).
 
 The document is sectioned, so a Workload Gateway can later answer the sections it has (identity, earnings, funding, its certificate) with the same shape.
@@ -25,11 +25,12 @@ The document is sectioned, so a Workload Gateway can later answer the sections i
 
 **From a laptop, through the operator's own SSH.** `toon-provider dash --ssh root@box` opens the tunnel itself. The status route is not exposed through the connector behind a token: that would be the first exception to "loopback only", and it would buy nothing SSH does not already give.
 
-## Money: shown everywhere, moved only by a person
+## Money: shown everywhere, spent only by a person
 
-- **Redeeming** is `toon-provider redeem`. It lists each channel with its unredeemed amount and an estimated gas cost, then redeems the ones the operator picks, or everything over `--all-above <amount>`. It signs the connector's existing `POST /channels/:id/redeem-latest` exactly as `connector send` signs a write. The operator key is read from stdin, held in memory and never written anywhere, on the box or on a laptop. That is connector ADR 0066's rule for the dashboard, applied to a terminal.
-- **Topping up the publisher** is `toon-provider topup <amount>`. The publisher calls the client's existing `channel.deposit`. `status` warns when the runway is short.
-- **Nothing is automatic.** No redeem on a schedule and no top-up below a threshold. Either would be an unattended process spending the operator's money, and that is its own decision.
+- **Collecting is the connector's job, and it happens on its own.** Since the x402-only connector (connector ADR 0075), the connector lands the latest voucher it holds on each inbound channel without being asked: on a fixed sweep (about every 600 s), and straight away when a payer starts a withdrawal or closes a channel. The timings are built into the connector, and the provider bundle does not switch them off. This is not spending. Landing puts money the operator is already owed on chain, paying gas from the connector's own settlement key, and it is what stops a payer from withdrawing collateral that covers vouchers the provider holds. A provider that waited for a person here would be exposed to that race.
+- **`toon-provider redeem` is "land now".** It lists each channel with what has not yet landed and an estimated gas cost, then lands the ones the operator picks, or everything over `--all-above <amount>`, by signing the connector's `POST /channels/:id/land` exactly as `connector send` signs a write. It exists for when the operator wants it on chain before the next sweep, for example before maintenance. The operator key is read from stdin, held in memory and never written anywhere, on the box or on a laptop. That is connector ADR 0066's rule for the dashboard, applied to a terminal. (Before the x402 move it signed `POST /channels/:id/redeem-latest`, which the connector has deleted.)
+- **Topping up the publisher** is `toon-provider topup <amount>`. The publisher adds collateral to its x402 channel through the client. `status` warns when the runway is short.
+- **Nothing spends on its own.** No top-up below a threshold, and nothing else that moves the operator's own money out of their keys. That would be an unattended process spending it, and that is its own decision.
 
 ## Alerts are an exit code
 
@@ -50,4 +51,5 @@ The document is sectioned, so a Workload Gateway can later answer the sections i
 - The provider keeps the latest `PublishReport` per relay per event in memory. It is not persisted, and a restart republishes anyway.
 - The publisher's `/status` and `topup` make it a service a person talks to. It still holds no identity and signs no directory event.
 - `status` is the one place an operator is told the connector's dashboard exists and what it is for.
+- Automatic landing is the connector's, not the provider's, so an operator who wants it stopped is asking the connector for a change. That change would reopen the withdrawal race described under "Money".
 - Build order: #162 first, then status, the publisher's `/status` and top-up, `--check` and its timer, redeem, the TUI, and `--ssh`.
