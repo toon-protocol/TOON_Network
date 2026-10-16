@@ -174,7 +174,9 @@ _Avoid_: Registration, enrolment, onboarding, grant publication
 The message by which a tenant stops a workload gateway serving a workload, which ends its serving but not its grant.
 _Avoid_: Revocation, deregistration, cancellation
 
-### Console
+### Console (retired)
+
+The console was retired in ADR 0031. These terms are kept so the ADRs and issues that use them still read correctly.
 
 **Console**:
 The local app through which an account finds providers, funds its payment channels and manages its workloads. The dashboard, landing page and docs are parts of it, or of its public site.

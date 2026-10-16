@@ -24,8 +24,10 @@ The roles:
   and publishes a Provider Profile, its Listings and its Liveness to its Relay
   Set. Together those are the [Provider Directory](CONTEXT.md#directory).
 - A **[Tenant](CONTEXT.md#parties)** is whoever holds a lease's Continuation
-  Token. It has no published identity and signs nothing. People act as tenants
-  through the **[Console](CONTEXT.md#console)**.
+  Token. It has no published identity and signs nothing. Tenants pay with
+  [`@toon-protocol/client`](https://github.com/toon-protocol/toon-client); tenant
+  tooling lives in the projects that need it, and
+  [rig](https://github.com/toon-protocol/rig) is the first.
 - A **[Workload Gateway](CONTEXT.md#leasing)** fronts a workload at a stable
   hostname and follows it to whichever provider is running it. It is optional.
 - A **relay** is a Nostr relay you pay to write to. It carries the Provider
@@ -42,7 +44,7 @@ A spawn, which starts a lease and buys its first Lease Interval
 
 ```mermaid
 sequenceDiagram
-    participant T as Tenant (console)
+    participant T as Tenant
     participant R as Relay
     participant C as Provider's connector
     participant P as Provider app
@@ -72,15 +74,14 @@ Every repository below is public under [toon-protocol](https://github.com/toon-p
 | [gas-station](https://github.com/toon-protocol/gas-station) | Pays Solana fees and relays EVM meta-transactions for a payer with no gas | Gas station operators | Image `ghcr.io/toon-protocol/gas-station` |
 | [provider](https://github.com/toon-protocol/provider) | The provider app (a hard fork of Paygress), its directory publisher, and the bundle that deploys them | Providers | Nothing yet. The deploy bundle builds the images on the box |
 | [gateway](https://github.com/toon-protocol/gateway) | The Workload Gateway | Gateway operators (optional) | Nothing yet. The deploy bundle builds the image on the box |
-| [console](https://github.com/toon-protocol/console) | The local app an Account uses to find providers, fund its payment channels and manage its workloads | Tenants, on their own machine | Nothing yet. Run it from a checkout |
-| [toon-client](https://github.com/toon-protocol/toon-client) | The payer side: seals a request, pays it over a channel and returns the answer, from Node.js or the `toon` CLI | Anyone paying a route, and the console | npm `@toon-protocol/client` |
+| [toon-client](https://github.com/toon-protocol/toon-client) | The payer side: seals a request, pays it over a channel and returns the answer, from Node.js or the `toon` CLI | Anyone paying a route, including tenants | npm `@toon-protocol/client` |
 | [infra](https://github.com/toon-protocol/infra) | The local sandbox (the whole network in one `docker compose`) and the public devnet's docs | Developers | Nothing. It is run from a checkout |
 
 ## I want to…
 
 | I want to… | Go to |
 |---|---|
-| Use the network: find a provider, fund a channel, spawn a workload | [console](https://github.com/toon-protocol/console) |
+| Use the network: find a provider, fund a channel, spawn a workload | There is no tenant app ([ADR 0031](docs/adr/0031-the-console-is-retired.md)). Pay the routes with [toon-client](https://github.com/toon-protocol/toon-client), or try the flow end to end in the [infra sandbox](https://github.com/toon-protocol/infra/blob/main/sandbox/README.md) |
 | Run a provider | [Run a provider](https://github.com/toon-protocol/provider#run-a-provider) |
 | Run a Workload Gateway | [Run a gateway](https://github.com/toon-protocol/gateway#run-a-gateway). A provider does not need one |
 | See what my node earned, and redeem it | The connector's [dashboard](https://github.com/toon-protocol/connector#the-dashboard) at `/dashboard` on its edge **shows** claims and channels; redeeming is a signed write to its [operator surface](https://github.com/toon-protocol/connector#the-operator-surface) (`POST /channels/:id/redeem-latest`), which the dashboard does not make. A guided `toon-provider redeem` is planned ([ADR 0029](docs/adr/0029-a-providers-operator-surface-is-a-status-command-on-the-box.md)) |
