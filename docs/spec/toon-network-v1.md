@@ -99,21 +99,7 @@ Checked on **2026-09-17** for `30438`, and on 2026-09-16 for every number alloca
 
 A **Deployment** is a tenant's signed statement that one environment of one repository is currently served by a lease. It is reserved here so that tenant tooling shares the `toon.network` namespace, and it is **out of this spec's scope**: a provider never publishes a Deployment, never reads one, and nothing in this spec depends on one existing. Only the tenant signs it.
 
-Its tags are sketched, not normative:
-
-```
-["d", "<environment>"]                             e.g. production, preview-42
-["a", "<repo coordinate>"]                         the repository this deploys
-["p", "<provider pubkey>"]                         the provider running the lease
-["x", "<workload_id>"]                             the lease's workload id
-["x", "<image digest>"]                            the image the workload runs
-["a", "30432:<provider pubkey>:<listing name>"]    the Listing it was bought from
-["L", "toon.network"]
-```
-
-The repeated `a` and `x` tags are deliberate: a single `#a` filter finds a Deployment by either its repository or its Listing, and a single `#x` filter finds it by either its workload id or its image digest, which is the same use of `x` as the Eviction Notice (§6.7) and the Image Registry entry (§8.1).
-
-Tenant tooling fixes the exact shape; until it does, a provider MUST ignore kind `30437`.
+Its shape is fixed by the relay's Deployment NIP draft, [`docs/nips/nip-deployment.md` in `toon-protocol/relay`](https://github.com/toon-protocol/relay/blob/main/docs/nips/nip-deployment.md), where the readers that draw it live (relay ADR 0012). It keeps the repeated `a` and `x` tags, so a single `#a` filter finds a Deployment by its repository or its Listing and a single `#x` filter by its workload id or its image digest; it marks each `x` and `p` tag and requires a NIP-40 expiration. A provider MUST ignore kind `30437`.
 
 ---
 
